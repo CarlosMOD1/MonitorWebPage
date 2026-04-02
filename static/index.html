@@ -1,0 +1,615 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Failure Monitoring</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#0F1923;color:#F4F6F8;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+/* Layout */
+.layout{display:flex;flex:1;overflow:hidden}
+.sidebar{width:175px;min-width:175px;background:#0A1420;display:flex;flex-direction:column;overflow:hidden}
+.sidebar-title{padding:10px 12px;font-size:10px;font-weight:700;color:#2E9CDB;letter-spacing:1px;border-bottom:1px solid #1A2B3C}
+.st-list{overflow-y:auto;flex:1}
+.st-item{display:flex;flex-direction:column;padding:8px 12px;cursor:pointer;border-left:3px solid transparent;transition:background .15s}
+.st-item:hover{background:#111D2B}
+.st-item.active{background:#1E3A5F;border-left:3px solid #2E9CDB}
+.sn{font-size:11px;font-weight:600;color:#F4F6F8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sy-bar{height:4px;background:#1A2B3C;border-radius:2px;margin:3px 0}
+.sy-fill{height:4px;border-radius:2px;transition:width .3s}
+.sf{font-size:9px;color:#8B9BAA}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+/* Product tabs */
+.pg-tabs{display:flex;gap:5px;padding:7px 12px;background:#0A1420;border-bottom:1px solid #1A2B3C;flex-wrap:wrap;flex-shrink:0}
+.pg-tab{padding:4px 13px;border-radius:12px;cursor:pointer;background:#1A2B3C;color:#8B9BAA;font-size:10px;font-weight:700;white-space:nowrap;border:1px solid #2C3E50;transition:all .15s}
+.pg-tab:hover{background:#1E3A5F;color:#F4F6F8}
+.pg-tab.active{background:#1E6FBA;color:#fff;border-color:#1E6FBA}
+/* Header */
+.hdr{padding:10px 16px;background:linear-gradient(135deg,#0F1923,#1A2B3C);border-bottom:1px solid #1E6FBA;flex-shrink:0;display:flex;align-items:center;justify-content:space-between}
+.hdr h1{font-size:17px;font-weight:700;color:#F4F6F8}
+.hdr h1 span{color:#F1C40F}
+.period{font-size:11px;color:#00D4AA;margin-top:2px}
+.date-range{display:flex;gap:6px;align-items:center}
+.date-range label{font-size:10px;color:#8B9BAA}
+.date-range input{background:#1A2B3C;border:1px solid #2C3E50;color:#F4F6F8;padding:3px 7px;border-radius:6px;font-size:10px;cursor:pointer}
+.btn-refresh{background:#1E6FBA;color:#fff;border:none;padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;font-weight:700}
+.btn-refresh:hover{background:#2E9CDB}
+.btn-refresh:disabled{background:#2C3E50;cursor:not-allowed}
+/* KPIs */
+.kpis{display:flex;gap:8px;padding:8px 12px;flex-shrink:0}
+.kpi{flex:1;background:#1A2B3C;border-radius:8px;padding:10px 12px;text-align:center}
+.kv{font-size:22px;font-weight:700}
+.kl{font-size:9px;color:#8B9BAA;letter-spacing:1px;margin-top:2px}
+/* Content */
+.content-area{flex:1;display:flex;gap:8px;padding:8px 12px;overflow:hidden}
+.tbl-wrap{flex:1;background:#1A2B3C;border-radius:8px;overflow:hidden;display:flex;flex-direction:column}
+.tbl-hdr{padding:8px 12px;font-size:10px;font-weight:700;color:#2E9CDB;letter-spacing:1px;border-bottom:1px solid #0F1923}
+.tbl-scroll{overflow-y:auto;flex:1}
+table{width:100%;border-collapse:collapse}
+th{padding:6px 8px;font-size:9px;color:#8B9BAA;text-align:left;background:#0F1923;position:sticky;top:0}
+td{padding:5px 8px;font-size:11px;border-bottom:1px solid #0F1923;color:#8B9BAA}
+tbody tr:hover td{background:#1E3A5F}
+/* Right panel */
+.right{flex:1.9;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.pie-wrap{background:#1A2B3C;border-radius:8px;padding:10px 12px;flex:1;display:flex;flex-direction:column;overflow:hidden}
+.section-title{font-size:10px;font-weight:700;color:#2E9CDB;letter-spacing:1px;margin-bottom:8px}
+.pie-svg-wrap{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+.pie-svg-wrap svg{width:100%;height:100%;max-height:100%}
+.pie-slice{cursor:pointer;transition:transform .18s ease}
+.pie-tooltip{position:absolute;background:#0F1923;border:1px solid #2E9CDB;color:#F4F6F8;padding:5px 10px;border-radius:6px;font-size:11px;pointer-events:none;white-space:nowrap;opacity:0;transition:opacity .15s;z-index:10}
+.top3-wrap{background:#1A2B3C;border-radius:8px;padding:10px 12px;flex-shrink:0}
+.t3-item{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.t3-num{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
+.t3-bar-wrap{flex:1}
+.t3-name{font-size:10px;color:#F4F6F8;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t3-bar{height:6px;border-radius:3px;transition:width .4s}
+.t3-qty{font-size:11px;font-weight:700;min-width:50px;text-align:right}
+.no-data{padding:20px;text-align:center;color:#8B9BAA;font-size:11px}
+/* Loading overlay */
+.loading-overlay{position:fixed;inset:0;background:rgba(15,25,35,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;gap:14px}
+.spinner{width:44px;height:44px;border:4px solid #1A2B3C;border-top:4px solid #2E9CDB;border-radius:50%;animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-msg{font-size:13px;color:#8B9BAA}
+.loading-overlay.hidden{display:none}
+/* Status bar */
+.status-bar{background:#0A1420;border-top:1px solid #1A2B3C;padding:3px 14px;font-size:9px;color:#2C3E50;display:flex;gap:16px;flex-shrink:0}
+.status-bar .ok{color:#00D4AA}
+.status-bar .err{color:#E74C3C}
+/* Last updated */
+.refresh-info{display:flex;align-items:center;gap:6px;margin-left:auto}
+/* Scrollbar */
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:#0A1420}
+::-webkit-scrollbar-thumb{background:#2C3E50;border-radius:2px}
+  /* Modal */
+  .modal-overlay {
+    display: none; position: fixed; top:0; left:0; width:100%; height:100%;
+    background: rgba(0,0,0,0.7); z-index: 2000;
+    align-items: center; justify-content: center;
+  }
+  .modal-content {
+    background: #142131; border: 1px solid #2C3E50; border-radius: 8px;
+    width: 90%; max-width: 900px; max-height: 80vh; display: flex; flex-direction: column;
+  }
+  .modal-header {
+    padding: 15px; border-bottom: 1px solid #2C3E50; display: flex; justify-content: space-between; align-items: center;
+  }
+  .modal-header h3 { margin: 0; color: #E6EDF3; }
+  .close-btn { background: none; border: none; color: #FF5A5F; font-size: 24px; cursor: pointer; line-height: 1; }
+  .modal-body { padding: 15px; overflow-y: auto; }
+  #modalTable td { font-size: 11px; }
+  .notes-cell {
+    max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer; transition: all .2s;
+  }
+  .notes-cell.expanded {
+    white-space: pre-wrap; word-break: break-word; max-width: none;
+  }
+</style>
+</head>
+<body>
+  <div class="modal-overlay" id="detailsModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle">Detalles</h3>
+        <button class="close-btn" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <table class="data-table" id="modalTable">
+          <thead>
+            <tr>
+              <th>QR</th>
+              <th>Station</th>
+              <th>Tipo de Falla</th>
+              <th>Failure Code</th>
+              <th>Notas</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+<!-- Loading overlay -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <div class="loading-msg" id="loadingMsg">Connecting to database...</div>
+</div>
+
+<!-- Tabs row -->
+<div class="pg-tabs" id="pgTabs"></div>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-title">&#9632; STATIONS</div>
+    <div class="st-list" id="stList"></div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="hdr">
+      <div>
+        <h1>&#9889; Failure <span>Monitoring</span></h1>
+        <div class="period" id="periodLabel"></div>
+      </div>
+      <div class="date-range">
+        <button class="btn-refresh" style="background:#8B9BAA;margin-right:10px;" onclick="openMonitor()">Monitor FPY</button>
+        <label>From</label>
+        <input type="date" id="dateFrom">
+        <label>To</label>
+        <input type="date" id="dateTo">
+        <button class="btn-refresh" id="btnFilter" onclick="applyDateFilter()">&#128260; Filter</button>
+      </div>
+    </div>
+
+    <div class="kpis" id="kpiCards"></div>
+
+    <div class="content-area">
+      <div class="tbl-wrap">
+        <div class="tbl-hdr">TOP FAILURES</div>
+        <div class="tbl-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>FAILURE TYPE</th>
+                <th>STATION</th>
+                <th style="text-align:center">QTY</th>
+                <th style="width:90px">DIST.</th>
+              </tr>
+            </thead>
+            <tbody id="failTable"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="right">
+        <div class="pie-wrap">
+          <div class="section-title">FAILURE DISTRIBUTION</div>
+          <div class="pie-svg-wrap" id="pieSvgWrap">
+            <div class="pie-tooltip" id="pieTooltip"></div>
+          </div>
+        </div>
+        <div class="top3-wrap">
+          <div class="section-title">TOP 3 FAILURES</div>
+          <div id="top3Container"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Status bar -->
+<div class="status-bar">
+  <span id="statusMsg">—</span>
+  <div class="refresh-info">
+    <span id="refreshCountdown"></span>
+  </div>
+</div>
+
+<script>
+const COLORS  = ['#FF6B35','#2E9CDB','#9B59B6','#00D4AA','#F1C40F','#E74C3C','#27AE60'];
+let DATA          = null;
+let GROUP_NAMES   = [];
+let activeProduct = 'all';
+let activeStation = 'all';
+
+// ── Default dates ───────────────────────────────────
+function defaultDates() {
+  const today = new Date();
+  const from  = new Date(today);
+  from.setDate(today.getDate() - 30);
+  const fmt = d => d.toISOString().slice(0,10);
+  return { from: fmt(from), to: fmt(today) };
+}
+
+function initDates() {
+  const d = defaultDates();
+  document.getElementById('dateFrom').value = d.from;
+  document.getElementById('dateTo').value   = d.to;
+}
+
+// ── Fetch data from API ─────────────────────────────
+async function loadData(dateFrom, dateTo) {
+  showLoading(true, 'Querying in-memory data...');
+  setFilterEnabled(false);
+  try {
+    const res = await fetch(`/api/data?from=${dateFrom}&to=${dateTo}`);
+    const json = await res.json();
+    if (res.status === 503) {
+      setStatus(`Server is booting: ${json.error}`, true);
+      showLoading(true, 'The server is doing its initial 1-year database load, please wait...');
+      setTimeout(() => loadData(dateFrom, dateTo), 10000); // Reintenta en 10 seg
+      return;
+    }
+    if (!res.ok || json.error) {
+      setStatus(`Error: ${json.error || 'Server error'}`, true);
+      showLoading(false);
+      setFilterEnabled(true);
+      return;
+    }
+    DATA        = json;
+    GROUP_NAMES = json.groups || [];
+    activeStation = 'all';
+    render();
+    setStatus(`Updated: ${json.lastUpdated} | Records: ${json.overall.total.toLocaleString('en-US')}`, false);
+  } catch(e) {
+    setStatus(`Connection error: ${e.message}`, true);
+  } finally {
+    showLoading(false);
+    setFilterEnabled(true);
+  }
+}
+
+function applyDateFilter() {
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  if (!from || !to) return;
+  loadData(from, to);
+}
+
+function openMonitor() {
+  const toDate = document.getElementById('dateTo').value || new Date().toISOString().slice(0,10);
+  window.location.href = `/monitor?product=${activeProduct}&date=${toDate}`;
+}
+
+// ── UI helpers ──────────────────────────────────────
+function showLoading(visible, msg) {
+  const el = document.getElementById('loadingOverlay');
+  el.classList.toggle('hidden', !visible);
+  if (msg) document.getElementById('loadingMsg').textContent = msg;
+}
+
+function setStatus(msg, isError) {
+  const el = document.getElementById('statusMsg');
+  el.textContent  = msg;
+  el.className    = isError ? 'err' : 'ok';
+}
+
+function setFilterEnabled(enabled) {
+  document.getElementById('btnFilter').disabled = !enabled;
+}
+
+function yieldColor(y) {
+  return y >= 95 ? '#00D4AA' : y >= 85 ? '#F1C40F' : '#E74C3C';
+}
+function fmt(n) {
+  return n == null ? '0' : n.toLocaleString('en-US');
+}
+
+// ── Filtered data ───────────────────────────────────
+function getFailures() {
+  let rows = DATA.failures;
+  if (activeProduct !== 'all') rows = rows.filter(r => r.producto === activeProduct);
+  if (activeStation !== 'all') rows = rows.filter(r => r.sid === activeStation);
+  return rows;
+}
+
+function getStations() {
+  let rows = DATA.stations;
+  if (activeProduct !== 'all') rows = rows.filter(r => r.producto === activeProduct);
+  return rows;
+}
+
+function getCurrentKPI() {
+  if (activeStation !== 'all') {
+    const st = DATA.stations.find(s => s.id === activeStation);
+    return st || DATA.overall;
+  }
+  if (activeProduct !== 'all') {
+    return DATA.byProduct[activeProduct] || DATA.overall;
+  }
+  return DATA.overall;
+}
+
+// ── Render KPIs ─────────────────────────────────────
+function renderKPIs() {
+  const k  = getCurrentKPI();
+  const yc = yieldColor(k.yield);
+  const fc = yieldColor(k.fpy);
+  document.getElementById('kpiCards').innerHTML = `
+    <div class="kpi" style="border-top:2px solid #2E9CDB">
+      <div class="kv" style="color:#2E9CDB">${fmt(k.total)}</div>
+      <div class="kl">TOTAL TESTED</div>
+    </div>
+    <div class="kpi" style="border-top:2px solid #FF6B35">
+      <div class="kv" style="color:#FF6B35">${fmt(k.failed)}</div>
+      <div class="kl">TOTAL FAILURES</div>
+    </div>
+    <div class="kpi" style="border-top:2px solid ${yc}">
+      <div class="kv" style="color:${yc}">${k.yield.toFixed(1)}%</div>
+      <div class="kl">YIELD</div>
+    </div>
+    <div class="kpi" style="border-top:2px solid ${fc}">
+      <div class="kv" style="color:${fc}">${k.fpy.toFixed(1)}%</div>
+      <div class="kl">FPY</div>
+    </div>`;
+}
+
+// ── Render Product Tabs ──────────────────────────────
+function renderTabs() {
+  const cont = document.getElementById('pgTabs');
+  let html = `<div class="pg-tab ${activeProduct==='all'?'active':''}" onclick="selectProduct('all')">All</div>`;
+  GROUP_NAMES.forEach(g => {
+    html += `<div class="pg-tab ${activeProduct===g?'active':''}" onclick="selectProduct('${g}')">${g}</div>`;
+  });
+  cont.innerHTML = html;
+}
+
+// ── Render Sidebar ───────────────────────────────────
+function renderSidebar() {
+  const sts = getStations();
+  const kpi = getCurrentKPI();
+  let html = `<div class="st-item ${activeStation==='all'?'active':''}" onclick="selectStation('all')">
+    <span class="sn">All Stations</span>
+    <span class="sf">${fmt(kpi.failed)} failures</span>
+  </div>`;
+  sts.forEach(s => {
+    const yc = yieldColor(s.yield);
+    html += `<div class="st-item ${activeStation===s.id?'active':''}" onclick="selectStation(${s.id})">
+      <span class="sn">${s.name}</span>
+      <div class="sy-bar"><div class="sy-fill" style="width:${s.yield}%;background:${yc}"></div></div>
+      <span class="sf">${fmt(s.failed)} failures</span>
+    </div>`;
+  });
+  document.getElementById('stList').innerHTML = html;
+}
+
+// ── Render Table ─────────────────────────────────────
+function renderTable() {
+  const rows = getFailures();
+  const maxQ = rows.length ? Math.max(...rows.map(r => r.qty)) : 1;
+  let html = '';
+  if (!rows.length) {
+    html = `<tr><td colspan="4" class="no-data">No data for selected filter</td></tr>`;
+  } else {
+    rows.slice(0, 60).forEach(r => {
+      const pct = Math.round(r.qty / maxQ * 100);
+      html += `<tr style="cursor:pointer" onclick="showDetails('${r.falla.replace(/'/g, "\\'")  }')">
+        <td style="color:#8B9BAA">${r.falla}</td>
+        <td style="color:#8B9BAA;font-size:10px">${r.sname}</td>
+        <td style="color:#00D4AA;font-weight:700;text-align:center">${fmt(r.qty)}</td>
+        <td><div style="height:6px;border-radius:3px;background:#FF6B35;width:${pct}%"></div></td>
+      </tr>`;
+    });
+  }
+  document.getElementById('failTable').innerHTML = html;
+}
+
+// ── SVG Pie helpers ──────────────────────────────────
+function polarXY(cx, cy, r, angleDeg) {
+  const rad = (angleDeg - 90) * Math.PI / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function slicePath(cx, cy, r, startDeg, endDeg) {
+  // Handle full circle (100%)
+  if (endDeg - startDeg >= 360) endDeg = startDeg + 359.9999;
+  const s = polarXY(cx, cy, r, startDeg);
+  const e = polarXY(cx, cy, r, endDeg);
+  const large = endDeg - startDeg > 180 ? 1 : 0;
+  return `M${cx},${cy} L${s.x.toFixed(2)},${s.y.toFixed(2)} A${r},${r} 0 ${large} 1 ${e.x.toFixed(2)},${e.y.toFixed(2)} Z`;
+}
+
+// ── Render Pie + Top3 ────────────────────────────────
+function renderPieTop3() {
+  const rows = getFailures();
+  const agg  = {};
+  rows.forEach(r => { agg[r.falla] = (agg[r.falla] || 0) + r.qty; });
+  const sorted = Object.entries(agg).sort((a,b) => b[1]-a[1]);
+  const total  = sorted.reduce((s,e) => s+e[1], 0);
+  const wrap   = document.getElementById('pieSvgWrap');
+  const tip    = document.getElementById('pieTooltip');
+
+  if (!total) {
+    wrap.innerHTML = '<div class="pie-tooltip" id="pieTooltip"></div><div class="no-data" style="margin:auto">No data</div>';
+    document.getElementById('top3Container').innerHTML = '<div class="no-data">No data</div>';
+    return;
+  }
+
+  // Build SVG — omit slices < 0.5%
+  const visible = sorted.filter(e => e[1] / total >= 0.005);
+  const cx = 100, cy = 100, r = 85, labelR = 58;
+  let svgPaths = '', svgLabels = '';
+  let startDeg = 0;
+
+  visible.forEach((e, i) => {
+    const pct    = e[1] / total;
+    const deg    = pct * 360;
+    const endDeg = startDeg + deg;
+    const color  = COLORS[i % COLORS.length];
+    const midDeg = startDeg + deg / 2;
+    const midRad = (midDeg - 90) * Math.PI / 180;
+    // pull-out translate direction
+    const tx = Math.cos(midRad) * 10;
+    const ty = Math.sin(midRad) * 10;
+    const d  = slicePath(cx, cy, r, startDeg, endDeg);
+    const pctLabel = (pct * 100).toFixed(1) + '%';
+    const name = e[0].replace(/"/g, '&quot;');
+
+    svgPaths += `<path class="pie-slice" d="${d}" fill="${color}" stroke="#0F1923" stroke-width="1"
+      data-name="${name}" data-qty="${e[1]}" data-pct="${pctLabel}" data-tx="${tx.toFixed(2)}" data-ty="${ty.toFixed(2)}"
+      onmouseenter="sliceEnter(this,event)" onmouseleave="sliceLeave(this)" onmousemove="sliceMove(event)"
+      onclick="showDetails('${name}')"/>`;
+
+    // Labels: only for slices >= 4% so text fits
+    if (pct >= 0.04) {
+      const lx = cx + labelR * Math.cos(midRad);
+      const ly = cy + labelR * Math.sin(midRad);
+      // Truncate long names
+      const maxLen = pct >= 0.12 ? 12 : 7;
+      const label  = e[0].length > maxLen ? e[0].slice(0, maxLen - 1) + '…' : e[0];
+      const fs     = pct >= 0.10 ? 5.5 : 4.5;
+      svgLabels += `<text x="${lx.toFixed(1)}" y="${(ly - 2).toFixed(1)}" text-anchor="middle" font-size="${fs}" fill="#fff" font-family="Segoe UI,Arial,sans-serif" font-weight="600" pointer-events="none">${label}</text>`;
+      svgLabels += `<text x="${lx.toFixed(1)}" y="${(ly + fs + 0.5).toFixed(1)}" text-anchor="middle" font-size="${(fs - 0.5).toFixed(1)}" fill="rgba(255,255,255,0.75)" font-family="Segoe UI,Arial,sans-serif" pointer-events="none">${pctLabel}</text>`;
+    }
+
+    startDeg = endDeg;
+  });
+
+  const svg = `<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">${svgPaths}<g>${svgLabels}</g></svg>`;
+  // keep tooltip element, replace rest
+  wrap.innerHTML = '<div class="pie-tooltip" id="pieTooltip"></div>' + svg;
+
+  // Top 3
+  const top3    = sorted.slice(0, 3);
+  const tColors = ['#FF6B35','#2E9CDB','#9B59B6'];
+  let t3Html = '';
+  top3.forEach((e, i) => {
+    const w = Math.round(e[1] / top3[0][1] * 100);
+    t3Html += `<div class="t3-item">
+      <div class="t3-num" style="background:${tColors[i]}">${i+1}</div>
+      <div class="t3-bar-wrap">
+        <div class="t3-name" title="${e[0]}">${e[0]}</div>
+        <div class="t3-bar" style="width:${w}%;background:${tColors[i]}"></div>
+      </div>
+      <div class="t3-qty" style="color:${tColors[i]}">${fmt(e[1])}</div>
+    </div>`;
+  });
+  document.getElementById('top3Container').innerHTML = t3Html;
+}
+
+// ── Pie slice hover handlers ──────────────────────────
+function sliceEnter(el, evt) {
+  const tx = parseFloat(el.dataset.tx);
+  const ty = parseFloat(el.dataset.ty);
+  el.style.transform = `translate(${tx}px,${ty}px)`;
+  const tip = document.getElementById('pieTooltip');
+  tip.textContent = `${el.dataset.name}  ${el.dataset.pct}  (${parseInt(el.dataset.qty).toLocaleString('en-US')})`;
+  tip.style.opacity = '1';
+  sliceMove(evt);
+}
+
+function sliceLeave(el) {
+  el.style.transform = '';
+  const tip = document.getElementById('pieTooltip');
+  if (tip) tip.style.opacity = '0';
+}
+
+function sliceMove(evt) {
+  const tip  = document.getElementById('pieTooltip');
+  if (!tip || tip.style.opacity === '0') return;
+  const wrap = document.getElementById('pieSvgWrap');
+  const rect = wrap.getBoundingClientRect();
+  let lx = evt.clientX - rect.left + 12;
+  let ly = evt.clientY - rect.top  - 10;
+  // keep inside wrap
+  if (lx + tip.offsetWidth > rect.width)  lx = evt.clientX - rect.left - tip.offsetWidth - 12;
+  if (ly < 0) ly = 4;
+  tip.style.left = lx + 'px';
+  tip.style.top  = ly + 'px';
+}
+
+// ── Period label ─────────────────────────────────────
+function renderPeriod() {
+  const df   = new Date(DATA.overall.dateFrom + 'T00:00:00');
+  const dt   = new Date(DATA.overall.dateTo   + 'T00:00:00');
+  const opts = {day:'2-digit', month:'short', year:'numeric'};
+  document.getElementById('periodLabel').textContent =
+    df.toLocaleDateString('es-MX', opts) + ' – ' + dt.toLocaleDateString('es-MX', opts);
+}
+
+// ── Interactions ─────────────────────────────────────
+function selectProduct(prod) {
+  activeProduct = prod;
+  activeStation = 'all';
+  render();
+}
+
+function selectStation(sid) {
+  activeStation = sid;
+  render();
+}
+
+// ── Main render ──────────────────────────────────────
+function render() {
+  if (!DATA) return;
+  renderPeriod();
+  renderTabs();
+  renderKPIs();
+  renderSidebar();
+  renderTable();
+  renderPieTop3();
+}
+
+// ── Modal logic ──────────────────────────────────────
+function closeModal() {
+  document.getElementById('detailsModal').style.display = 'none';
+}
+
+document.getElementById('detailsModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+async function showDetails(falla) {
+  if (!falla) return;
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  const prod = activeProduct;
+
+  document.getElementById('modalTitle').innerText = (prod !== 'all' ? prod + ' — ' : '') + falla;
+  const tbody = document.querySelector('#modalTable tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Cargando datos...</td></tr>';
+  document.getElementById('detailsModal').style.display = 'flex';
+
+  try {
+    const url = `/api/failure_details?from=${from}&to=${to}&product=${prod}&falla=${encodeURIComponent(falla)}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!resp.ok) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error: ${data.error}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = '';
+    if (data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Sin registros.</td></tr>';
+      return;
+    }
+    data.forEach(row => {
+      const tr = document.createElement('tr');
+      const qr = row.currQr || row.prevQr || '-';
+      const notesText = row.notes || '-';
+      const escaped = notesText.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      tr.innerHTML = `
+        <td>${qr}</td>
+        <td>${row.stationName || '-'}</td>
+        <td>${row.tipoFalla || '-'}</td>
+        <td>${row.failureCode || '-'}</td>
+        <td class="notes-cell" onclick="this.classList.toggle('expanded')">${escaped}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error de conexion.</td></tr>';
+  }
+}
+
+// ── Init ─────────────────────────────────────────────
+initDates();
+const d = defaultDates();
+loadData(d.from, d.to);
+</script>
+</body>
+</html>
+

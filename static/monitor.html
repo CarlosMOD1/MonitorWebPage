@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Monitor FPY - CTrack</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #0F1923; color: #F4F6F8; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        /* Header & Nav */
+        .hdr { padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg,#0F1923,#1A2B3C); border-bottom: 2px solid #1E6FBA; flex-shrink: 0; }
+        .hdr h1 { font-size: 18px; font-weight: 700; color: #F4F6F8; }
+        .hdr h1 span { color: #F1C40F; }
+        .btn-back { display: inline-flex; align-items: center; text-decoration: none; color: #8B9BAA; font-size: 12px; font-weight: 700; background: #1A2B3C; padding: 6px 12px; border-radius: 6px; border: 1px solid #2C3E50; transition: all 0.2s; }
+        .btn-back:hover { background: #1E3A5F; color: #fff; }
+        
+        /* Main dashboard info */
+        .dashboard-info { position: absolute; top: 80px; right: 30px; background: rgba(15, 25, 35, 0.85); padding: 15px; border-radius: 8px; text-align: right; z-index: 10; border: 1px solid #2C3E50; }
+        .global-fpy { font-size: 40px; font-weight: bold; line-height: 1; margin-bottom: 5px; }
+        .global-ratio { font-size: 12px; color: #8B9BAA; font-weight: 600; letter-spacing: 1px; }
+        
+        /* Chart area */
+        .chart-container { flex: 1; padding: 20px; background: #1A2B3C; position: relative; margin: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .titles { text-align: center; margin-bottom: 15px; }
+        .station-title { font-size: 24px; font-weight: bold; color: #F4F6F8; letter-spacing: 1px; }
+        .date-title { font-size: 15px; color: #00D4AA; font-weight: bold; margin-top: 5px; }
+        .group-id { font-size: 12px; color: #8B9BAA; margin-top: 2px; }
+        
+        /* Controls */
+        .controls { display: flex; gap: 8px; justify-content: center; padding: 15px; background: #0A1420; border-top: 1px solid #1A2B3C; flex-shrink: 0; align-items: center; flex-wrap: wrap;}
+        .btn { background: #1E6FBA; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 700; cursor: pointer; transition: background 0.2s; font-size: 13px; }
+        .btn:hover { background: #2E9CDB; }
+        .btn-nav { background: #1A2B3C; border: 1px solid #2C3E50; color: #8B9BAA; }
+        .btn-nav:hover { background: #1E3A5F; color: #fff; }
+        .btn-pause.paused { background: #E74C3C; color: #fff; }
+        .date-picker { background: #1A2B3C; border: 1px solid #2C3E50; color: #F4F6F8; padding: 7px 12px; border-radius: 6px; font-size: 13px; font-family: inherit; }
+        
+        /* Loading */
+        .loading-overlay { position: fixed; inset: 0; background: rgba(15,25,35,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; gap: 15px; transition: opacity 0.3s; }
+        .loading-overlay.hidden { opacity: 0; pointer-events: none; }
+        .spinner { width: 44px; height: 44px; border: 4px solid #1A2B3C; border-top: 4px solid #2E9CDB; border-radius: 50%; animation: spin 0.9s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* No data */
+        .no-data-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: bold; color: #E74C3C; display: none;}
+    </style>
+</head>
+<body>
+
+<div class="hdr">
+    <div>
+        <h1>⏱️ Real-time FPY <span>Monitor</span></h1>
+    </div>
+    <a href="/" class="btn-back">🔙 Regresar al Dashboard Main</a>
+</div>
+
+<div class="chart-container">
+    <div class="titles">
+        <div class="station-title" id="lblStationName">Cargando...</div>
+        <div class="date-title" id="lblDate"></div>
+        <div class="group-id" id="lblGroupId"></div>
+    </div>
+    
+    <div class="dashboard-info" id="pnlGlobalInfo" style="display: none;">
+        <div class="global-fpy" id="valGlobalFpy">0.0%</div>
+        <div class="global-ratio" id="valGlobalRatio">YIELD TOTAL | OK: 0/0</div>
+    </div>
+    
+    <div class="no-data-msg" id="msgNoData">SIN DATOS DE PRODUCCIÓN</div>
+    
+    <div style="position: relative; height: calc(100vh - 280px); width: 100%; min-height: 300px;">
+        <canvas id="fpyChart"></canvas>
+    </div>
+</div>
+
+<div class="controls">
+    <button class="btn btn-nav" onclick="addDays(-1)">&lt;&lt; Día Ant</button>
+    <button class="btn btn-nav" onclick="setToday()">Hoy</button>
+    <button class="btn btn-nav" onclick="addDays(1)">Día Sig &gt;&gt;</button>
+    
+    <button class="btn btn-nav" style="margin-left: 20px;" onclick="prevStation()">&lt;</button>
+    <button class="btn btn-nav" onclick="nextStation()">&gt;</button>
+    <button class="btn btn-pause" id="btnPause" onclick="togglePause()">||</button>
+    
+    <input type="date" class="date-picker" id="datePicker" style="margin-left: 20px;" onchange="loadData()">
+</div>
+
+<div class="loading-overlay" id="loadingOverlay">
+    <div class="spinner"></div>
+    <div id="loadingMsg">Cargando datos...</div>
+</div>
+
+<script>
+    // Configuración de Gráfica
+    Chart.defaults.color = '#fff';
+    Chart.defaults.font.family = "'Segoe UI', Arial, sans-serif";
+    
+    let chartObj = null;
+    let autoCycleInterval = null;
+    let dataRefreshInterval = null;
+    let isPaused = false;
+    
+    // Estado de datos
+    let currentData = {};
+    let groups = [];
+    let currentGroupIndex = 0;
+    
+    // Función de colores
+    function getBarColor(val) {
+        if (val < 80) return '#ff5252';
+        if (val < 90) return '#ffeb3b';
+        return '#69f0ae';
+    }
+
+    // Inicializar Chart.js
+    function initChart() {
+        const ctx = document.getElementById('fpyChart').getContext('2d');
+        
+        // Plugin en línea para dibujar los textos arriba de las barras
+        const topLabelsPlugin = {
+            id: 'topLabels',
+            afterDatasetsDraw(chart, args, pluginOptions) {
+                const { ctx, data, scales: { x, y } } = chart;
+                ctx.save();
+                
+                // Las barras son el dataset 0
+                const meta = chart.getDatasetMeta(0);
+                const hourData = currentData[groups[currentGroupIndex]]?.hourly;
+                if (!hourData) return;
+                
+                meta.data.forEach((bar, index) => {
+                    const count = hourData.count[index];
+                    if (count > 0) {
+                        const sum = hourData.sum[index];
+                        const fpy = hourData.fpy[index];
+                        
+                        const bx = bar.x;
+                        const by = bar.y;
+                        
+                        const textYield = `${fpy.toFixed(0)}%`;
+                        const textRatio = `${sum}/${count}`;
+                        
+                        // Calcular anchos para dibujar una cajita negra gruesa de fondo
+                        ctx.font = 'bold 12px sans-serif';
+                        const w1 = ctx.measureText(textYield).width;
+                        ctx.font = '10px sans-serif';
+                        const w2 = ctx.measureText(textRatio).width;
+                        const mainW = Math.max(w1, w2) + 8;
+                        
+                        // Fondo sólido oscuro
+                        ctx.fillStyle = 'rgba(30, 30, 30, 0.9)';
+                        ctx.fillRect(bx - mainW/2, by - 32, mainW, 30);
+                        
+                        // Dibujar texto YIELD (ej. 95%)
+                        ctx.fillStyle = '#ffffff';
+                        ctx.font = 'bold 12px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'bottom';
+                        ctx.fillText(textYield, bx, by - 16);
+                        
+                        // Dibujar texto RATIO (ej. 10/10)
+                        ctx.fillStyle = '#aaaaaa';
+                        ctx.font = '10px sans-serif';
+                        ctx.fillText(textRatio, bx, by - 4);
+                    }
+                });
+                
+                ctx.restore();
+            }
+        };
+
+        chartObj = new Chart(ctx, {
+            type: 'bar',
+            plugins: [topLabelsPlugin],
+            data: {
+                labels: Array.from({length: 24}, (_, i) => `${String(i).padStart(2, '0')}:00`),
+                datasets: [
+                    {
+                        type: 'bar',
+                        label: 'FPY',
+                        data: Array(24).fill(0),
+                        backgroundColor: Array(24).fill('#2a2a2a'),
+                        order: 2,
+                        barPercentage: 0.7
+                    },
+                    {
+                        type: 'line',
+                        label: 'FPY Trend',
+                        data: Array(24).fill(null),
+                        borderColor: '#ffffff',
+                        borderWidth: 2,
+                        pointBackgroundColor: '#ffffff',
+                        pointRadius: 4,
+                        order: 1,
+                        spanGaps: true
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                layout: { padding: { top: 30 } },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { enabled: false }
+                },
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 115,
+                        suggestedMin: 0,
+                        suggestedMax: 115,
+                        beginAtZero: true,
+                        grid: { color: 'rgba(255,255,255,0.1)', borderDash: [5, 5] },
+                        ticks: { stepSize: 20 }
+                    },
+                    x: {
+                        grid: { display: false }
+                    }
+                }
+            }
+        });
+    }
+
+    // Dibujar la gráfica para la estación actual
+    function renderCurrentStation() {
+        if (!groups.length) {
+            document.getElementById('lblStationName').innerText = "SIN DATOS";
+            document.getElementById('pnlGlobalInfo').style.display = 'none';
+            document.getElementById('msgNoData').style.display = 'flex';
+            if(chartObj) {
+                chartObj.data.datasets[0].data = Array(24).fill(0);
+                chartObj.data.datasets[1].data = Array(24).fill(null);
+                chartObj.update();
+            }
+            return;
+        }
+
+        document.getElementById('msgNoData').style.display = 'none';
+        document.getElementById('pnlGlobalInfo').style.display = 'block';
+
+        const groupId = groups[currentGroupIndex];
+        const stat = currentData[groupId];
+        
+        let dStr = document.getElementById('datePicker').value;
+        let isToday = (dStr === new Date().toISOString().slice(0,10));
+        
+        document.getElementById('lblStationName').innerText = `Monitor: ${stat.stationName}`;
+        document.getElementById('lblDate').innerText = `${dStr} ${isToday ? '(HOY)' : ''}`;
+        document.getElementById('lblGroupId').innerText = (groupId !== stat.stationName) ? `ID: ${groupId}` : '';
+        
+        // Colores y KPIs Globales
+        const gFpy = stat.global_fpy;
+        const colorTitle = getBarColor(gFpy);
+        document.getElementById('valGlobalFpy').innerText = `${gFpy.toFixed(1)}%`;
+        document.getElementById('valGlobalFpy').style.color = colorTitle;
+        document.getElementById('valGlobalRatio').innerText = `YIELD TOTAL | OK: ${stat.total_pass}/${stat.total_att}`;
+
+        if (!chartObj) return;
+
+        // Actualizar datos de series
+        const barData = stat.hourly.fpy.map((v, i) => stat.hourly.count[i] > 0 ? v : 0);
+        const lineData = stat.hourly.fpy.map((v, i) => stat.hourly.count[i] > 0 ? v : null);
+        const barColors = stat.hourly.fpy.map((v, i) => stat.hourly.count[i] > 0 ? getBarColor(v) : '#2a2a2a');
+
+        chartObj.data.datasets[0].data = barData;
+        chartObj.data.datasets[0].backgroundColor = barColors;
+        chartObj.data.datasets[1].data = lineData;
+        chartObj.update();
+    }
+
+    // Ciclo automático (cada 10 seg)
+    function cycleStations() {
+        if (isPaused || groups.length <= 1) return;
+        currentGroupIndex = (currentGroupIndex + 1) % groups.length;
+        renderCurrentStation();
+    }
+
+    // Funciones de control
+    function togglePause() {
+        isPaused = !isPaused;
+        const btn = document.getElementById('btnPause');
+        btn.innerText = isPaused ? ">>" : "||";
+        if(isPaused) btn.classList.add('paused'); else btn.classList.remove('paused');
+    }
+
+    function nextStation() {
+        if (!groups.length) return;
+        currentGroupIndex = (currentGroupIndex + 1) % groups.length;
+        renderCurrentStation();
+    }
+    
+    function prevStation() {
+        if (!groups.length) return;
+        currentGroupIndex = (currentGroupIndex - 1 + groups.length) % groups.length;
+        renderCurrentStation();
+    }
+
+    function addDays(days) {
+        const picker = document.getElementById('datePicker');
+        const d = new Date(picker.value + 'T00:00:00');
+        d.setDate(d.getDate() + days);
+        picker.value = d.toISOString().slice(0, 10);
+        loadData();
+    }
+
+    function setToday() {
+        const picker = document.getElementById('datePicker');
+        picker.value = new Date().toISOString().slice(0, 10);
+        loadData();
+    }
+
+    // Cargar datos a la API
+    async function loadData() {
+        const dStr = document.getElementById('datePicker').value;
+        const urlParams = new URLSearchParams(window.location.search);
+        const product = urlParams.get('product') || 'all';
+        
+        // Actualizar título global para que el usuario sepa en qué producto está
+        const pageTitle = document.querySelector('.hdr h1');
+        if (product !== 'all') {
+            pageTitle.innerHTML = `⏱️ Real-time FPY <span>Monitor</span> - <b>${product}</b>`;
+        } else {
+            pageTitle.innerHTML = `⏱️ Real-time FPY <span>Monitor</span> - <b>Todos los productos</b>`;
+        }
+        
+        const overlay = document.getElementById('loadingOverlay');
+        overlay.classList.remove('hidden');
+        
+        try {
+            const res = await fetch(`/api/monitor_data?date=${dStr}&product=${product}`);
+            const json = await res.json();
+            
+            if (json.error) {
+                console.warn(json.error);
+                document.getElementById('lblStationName').innerText = "ESPERANDO SERVIDOR...";
+                document.getElementById('msgNoData').innerText = "EL SERVIDOR ESTÁ CARGANDO HISTÓRICO, REINTENTANDO...";
+                document.getElementById('msgNoData').style.display = 'flex';
+                setTimeout(loadData, 5000); // intentar en 5 segundos
+                return;
+            }
+            
+            currentData = json.data || {};
+            groups = Object.keys(currentData).sort();
+            
+            // Ajustar indice si se redujo el # de grupos
+            if(currentGroupIndex >= groups.length) currentGroupIndex = 0;
+            
+            renderCurrentStation();
+        } catch (e) {
+            console.error("Error loading monitor data", e);
+            document.getElementById('lblStationName').innerText = "ERROR DE CONEXIÓN";
+            document.getElementById('msgNoData').innerText = "ERROR AL CONECTAR CON BD";
+            document.getElementById('msgNoData').style.display = 'flex';
+        } finally {
+            overlay.classList.add('hidden');
+        }
+    }
+
+    // Inicialización al cargar la página
+    window.onload = () => {
+        const urlParams = new URLSearchParams(window.location.search);
+        const dateParam = urlParams.get('date');
+        
+        const picker = document.getElementById('datePicker');
+        if (dateParam) {
+            picker.value = dateParam;
+            loadData();
+        } else {
+            setToday(); 
+        }
+        
+        initChart();
+        autoCycleInterval = setInterval(cycleStations, 10000);
+        
+        // Refrescar datos de la consulta cada 10 minutos (solo si es el día de hoy)
+        dataRefreshInterval = setInterval(() => {
+            const isToday = (document.getElementById('datePicker').value === new Date().toISOString().slice(0,10));
+            if(isToday && !isPaused) {
+                loadData();
+            }
+        }, 10 * 60 * 1000);
+    };
+
+</script>
+</body>
+</html>

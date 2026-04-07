@@ -108,6 +108,9 @@ def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
 
     if ns and ns != "undefined":
 
+        if '"fail_tests": ["Sleep Current", "Non_FEM Current", "FEM Current"]' in ns:
+            return "No current measured"
+
         # ── Búsqueda de cadena estilo fórmula Excel ────────────
         # Igual que: MID(I2, FIND("""fail_tests"": [""", I2)+16, FIND(...)-(FIND(...)+16))
         # Busca el marcador en el texto crudo y extrae hasta el siguiente "
@@ -201,9 +204,23 @@ def connect():
     )
     return pyodbc.connect(conn_str, timeout=60)
 
+def prepare_dataframe(df):
+    """Pre-calcula columnas pesadas para evitar demoras en los endpoints."""
+    if df.empty:
+        return df
+    if not pd.api.types.is_datetime64_any_dtype(df['endtime']):
+        df['endtime'] = pd.to_datetime(df['endtime'])
+    
+    # Pre-calcular producto y tipo de falla una sola vez
+    df["producto"]  = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
+    df["tipoFalla"] = df.apply(
+        lambda r: extract_tipo_falla(r["failureCode"], r["notes"], r["stationName"], r["producto"]), axis=1
+    )
+    return df
+
 def load_historical_data():
     """Carga 1 año de datos desde la BD al arrancar el servidor."""
-    print("⏳ [DATABASE] Iniciando carga de datos historicos (ultimo año)...")
+    print(" [DATABASE] Iniciando carga de datos historicos (ultimo año)...")
     start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     conn = connect()
     
@@ -211,12 +228,11 @@ def load_historical_data():
     df = pd.read_sql(query, conn)
     conn.close()
     
-    if not pd.api.types.is_datetime64_any_dtype(df['endtime']):
-        df['endtime'] = pd.to_datetime(df['endtime'])
+    df = prepare_dataframe(df)
         
     GLOBAL_CACHE["df"] = df
     GLOBAL_CACHE["last_updated"] = datetime.now()
-    print(f"✅ [DATABASE] Carga inicial completa. {len(df)} registros alojados en Memoria RAM.")
+    print(f" [DATABASE] Carga inicial completa. {len(df)} registros alojados en Memoria RAM.")
 
 def background_update_worker():
     """
@@ -226,7 +242,7 @@ def background_update_worker():
     while True:
         time.sleep(15 * 60) # 15 min de espera
         try:
-            print("🔄 [BACKGROUND] Refrescando registros recientes de DB...")
+            print("[BACKGROUND] Refrescando registros recientes de DB...")
             cutoff_dt = datetime.now() - timedelta(days=2)
             cutoff_str = cutoff_dt.strftime("%Y-%m-%d")
             
@@ -235,8 +251,7 @@ def background_update_worker():
             df_recent = pd.read_sql(query, conn)
             conn.close()
             
-            if not df_recent.empty and not pd.api.types.is_datetime64_any_dtype(df_recent['endtime']):
-                df_recent['endtime'] = pd.to_datetime(df_recent['endtime'])
+            df_recent = prepare_dataframe(df_recent)
                 
             current_df = GLOBAL_CACHE["df"]
             
@@ -255,11 +270,6 @@ def background_update_worker():
 
 
 def compute_stats(df, date_from, date_to):
-    df["producto"]  = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
-    df["tipoFalla"] = df.apply(
-        lambda r: extract_tipo_falla(r["failureCode"], r["notes"], r["stationName"], r["producto"]), axis=1
-    )
-
     def kpis(d):
         t  = len(d)
         p  = (d["resultado"] == "PASSED").sum()
@@ -466,17 +476,11 @@ def api_failure_details():
         mask = (df['endtime'] >= dt_from) & (df['endtime'] < dt_to)
         sub = df[mask].copy()
 
-        sub["producto"] = sub["stationid"].map(STATION_TO_GROUP).fillna("Other")
         if product != "all":
             sub = sub[sub["producto"] == product]
 
         # Solo registros FAILED
         sub = sub[sub["resultado"] == "FAILED"]
-
-        # Calcular tipo de falla
-        sub["tipoFalla"] = sub.apply(
-            lambda r: extract_tipo_falla(r["failureCode"], r["notes"], r["stationName"], r["producto"]), axis=1
-        )
 
         if falla:
             sub = sub[sub["tipoFalla"] == falla]

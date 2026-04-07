@@ -7,9 +7,7 @@ __pycache__/
 *~
 
 # Entornos virtuales
-venv/
 env/
-.venv/
 
 # Sistema operativo
 .DS_Store

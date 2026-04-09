@@ -650,12 +650,14 @@ function renderPassFailPie() {
     const passPath = slicePath(cx, cy, r, 0, passDeg);
     paths += `<path d="${passPath}" fill="#00D4AA" stroke="#0F1923" stroke-width="1"
       onmouseenter="pfSliceEnter(this,event)" onmouseleave="pfSliceLeave(this)" onmousemove="pfSliceMove(event)"
+      onclick="showPassFailDetails('PASSED')"
       data-name="PASSED" data-qty="${passed}" data-pct="${(passPct*100).toFixed(1)}%"/>`;
   }
   if (failed > 0) {
     const failPath = slicePath(cx, cy, r, passDeg, passDeg + failPct * 360);
     paths += `<path d="${failPath}" fill="#E74C3C" stroke="#0F1923" stroke-width="1"
       onmouseenter="pfSliceEnter(this,event)" onmouseleave="pfSliceLeave(this)" onmousemove="pfSliceMove(event)"
+      onclick="showPassFailDetails('FAILED')"
       data-name="FAILED" data-qty="${failed}" data-pct="${(failPct*100).toFixed(1)}%"/>`;
   }
 
@@ -717,6 +719,48 @@ function closeModal() {
 document.getElementById('detailsModal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
+
+async function showPassFailDetails(resultado) {
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  const prod = activeProduct;
+
+  const label = resultado === 'PASSED' ? 'Registros PASSED' : 'Registros FAILED';
+  document.getElementById('modalTitle').innerText = (prod !== 'all' ? prod + ' — ' : '') + label;
+  const tbody = document.querySelector('#modalTable tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Cargando datos...</td></tr>';
+  document.getElementById('detailsModal').style.display = 'flex';
+
+  try {
+    const url = `/api/passfail_details?from=${from}&to=${to}&product=${prod}&resultado=${resultado}&real_failures=${realFailuresMode}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!resp.ok) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error: ${data.error}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = '';
+    if (data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Sin registros.</td></tr>';
+      return;
+    }
+    data.forEach(row => {
+      const tr = document.createElement('tr');
+      const qr = row.currQr || row.prevQr || '-';
+      const resColor = row.resultado === 'PASSED' ? '#00D4AA' : '#E74C3C';
+      tr.innerHTML = `
+        <td>${qr}</td>
+        <td>${row.stationName || '-'}</td>
+        <td style="color:${resColor};font-weight:600">${row.resultado || '-'}</td>
+        <td>${row.failureCode || '-'}</td>
+        <td style="color:#8B9BAA;font-size:10px">${row.endtime || '-'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error de conexion.</td></tr>';
+  }
+}
 
 async function showDetails(falla) {
   if (!falla) return;

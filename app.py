@@ -221,7 +221,7 @@ def prepare_dataframe(df):
 def load_historical_data():
     """Carga 1 año de datos desde la BD al arrancar el servidor."""
     print(" [DATABASE] Iniciando carga de datos historicos (ultimo año)...")
-    start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     conn = connect()
     
     query = SQL + f" AND e.endtime >= '{start_date}'"
@@ -531,6 +531,66 @@ def api_failure_details():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/passfail_details")
+def api_passfail_details():
+    """Devuelve registros del último intento por QR, filtrados por resultado (PASSED/FAILED)."""
+    date_from_str = request.args.get("from", (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"))
+    date_to_str   = request.args.get("to",   datetime.now().strftime("%Y-%m-%d"))
+    product       = request.args.get("product", "all")
+    resultado     = request.args.get("resultado", "")  # PASSED o FAILED
+    real_failures = request.args.get("real_failures", "false").lower() == "true"
+
+    try:
+        df = GLOBAL_CACHE["df"]
+        if df.empty:
+            return jsonify({"error": "System is booting"}), 503
+
+        dt_from = pd.to_datetime(date_from_str)
+        dt_to   = pd.to_datetime(date_to_str) + timedelta(days=1)
+
+        mask = (df['endtime'] >= dt_from) & (df['endtime'] < dt_to)
+        sub = df[mask].copy()
+
+        if product != "all":
+            sub = sub[sub["producto"] == product]
+
+        if sub.empty:
+            return jsonify([])
+
+        if real_failures:
+            # Último registro por prevQr
+            now = datetime.now()
+            cutoff = now - timedelta(hours=24)
+            idx = sub.groupby("prevQr")["endtime"].idxmax()
+            last_per_qr = sub.loc[idx]
+            # Solo los relevantes (passed o failed >24h)
+            sub = last_per_qr[
+                (last_per_qr["resultado"] == "PASSED") |
+                ((last_per_qr["resultado"] == "FAILED") & (last_per_qr["endtime"] < cutoff))
+            ]
+
+        if resultado:
+            sub = sub[sub["resultado"] == resultado]
+
+        sub = sub.sort_values("endtime", ascending=False).head(500)
+
+        records = []
+        for _, r in sub.iterrows():
+            records.append({
+                "prevQr":      str(r.get("prevQr", "") or ""),
+                "currQr":      str(r.get("currQr", "") or ""),
+                "resultado":   str(r.get("resultado", "")),
+                "tipoFalla":   str(r.get("tipoFalla", "")),
+                "failureCode": str(r.get("failureCode", "")),
+                "stationName": str(r.get("stationName", "")),
+                "endtime":     r["endtime"].strftime("%Y-%m-%d %H:%M") if pd.notna(r.get("endtime")) else "",
+            })
+
+        return jsonify(records)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/data")
 def api_data():
     date_from_str = request.args.get("from", (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"))
@@ -552,8 +612,17 @@ def api_data():
         # Calcular pass/fail pie con desglose por producto y estación
         if real_failures and not df_filtered.empty:
             # Último registro por prevQr (incluye PASSED y FAILED)
+            now = datetime.now()
+            cutoff = now - timedelta(hours=24)
             idx = df_filtered.groupby("prevQr")["endtime"].idxmax()
             last_per_qr = df_filtered.loc[idx]
+
+            # Solo contar como "failed" los que tienen >24h (misma lógica que filter_real_failures)
+            # Los FAILED recientes (<24h) no se cuentan ni como pass ni como fail — están en proceso
+            relevant = last_per_qr[
+                (last_per_qr["resultado"] == "PASSED") |
+                ((last_per_qr["resultado"] == "FAILED") & (last_per_qr["endtime"] < cutoff))
+            ]
 
             def _pf(d):
                 p = int((d["resultado"] == "PASSED").sum())
@@ -566,13 +635,13 @@ def api_data():
                     "yield":  round(p / t * 100, 1) if t else 0,
                 }
 
-            pf_overall = _pf(last_per_qr)
+            pf_overall = _pf(relevant)
             pf_by_product = {}
-            for prod, grp in last_per_qr.groupby("producto"):
+            for prod, grp in relevant.groupby("producto"):
                 pf_by_product[prod] = _pf(grp)
 
             pf_by_station = {}
-            for sid, grp in last_per_qr.groupby("stationid"):
+            for sid, grp in relevant.groupby("stationid"):
                 pf_by_station[int(sid)] = _pf(grp)
 
             pass_fail_pie = {

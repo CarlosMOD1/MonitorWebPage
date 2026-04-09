@@ -43,6 +43,11 @@
         .spinner { width: 44px; height: 44px; border: 4px solid #1A2B3C; border-top: 4px solid #2E9CDB; border-radius: 50%; animation: spin 0.9s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         
+        /* Pass/Fail donut */
+        .pf-donut { position: absolute; top: 80px; left: 30px; background: rgba(15, 25, 35, 0.85); padding: 12px; border-radius: 8px; z-index: 10; border: 1px solid #2C3E50; text-align: center; }
+        .pf-donut svg { display: block; }
+        .pf-label { font-size: 10px; color: #8B9BAA; margin-top: 4px; font-weight: 600; letter-spacing: 0.5px; }
+        
         /* No data */
         .no-data-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: bold; color: #E74C3C; display: none;}
     </style>
@@ -66,6 +71,11 @@
     <div class="dashboard-info" id="pnlGlobalInfo" style="display: none;">
         <div class="global-fpy" id="valGlobalFpy">0.0%</div>
         <div class="global-ratio" id="valGlobalRatio">YIELD TOTAL | OK: 0/0</div>
+    </div>
+
+    <div class="pf-donut" id="pnlPassFailDonut" style="display: none;">
+        <svg id="pfDonutSvg" viewBox="0 0 100 100" width="110" height="110"></svg>
+        <div class="pf-label">PASS / FAIL</div>
     </div>
     
     <div class="no-data-msg" id="msgNoData">SIN DATOS DE PRODUCCIÓN</div>
@@ -112,6 +122,36 @@
         if (val < 80) return '#ff5252';
         if (val < 90) return '#ffeb3b';
         return '#69f0ae';
+    }
+
+    // Pass/Fail donut helpers
+    function pfPolar(cx, cy, r, deg) {
+        const rad = (deg - 90) * Math.PI / 180;
+        return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+    }
+    function pfArc(cx, cy, r, startDeg, endDeg) {
+        if (endDeg - startDeg >= 360) endDeg = startDeg + 359.9999;
+        const s = pfPolar(cx, cy, r, startDeg);
+        const e = pfPolar(cx, cy, r, endDeg);
+        const large = endDeg - startDeg > 180 ? 1 : 0;
+        return `M${cx},${cy} L${s.x.toFixed(2)},${s.y.toFixed(2)} A${r},${r} 0 ${large} 1 ${e.x.toFixed(2)},${e.y.toFixed(2)} Z`;
+    }
+    function renderPassFailDonut(passed, total) {
+        const svg = document.getElementById('pfDonutSvg');
+        const failed = total - passed;
+        if (total <= 0) { svg.innerHTML = ''; return; }
+        const cx = 50, cy = 50, r = 42, ir = 25;
+        const passPct = passed / total;
+        const passDeg = passPct * 360;
+        const pPath = pfArc(cx, cy, r, 0, passDeg || 0.001);
+        const fPath = pfArc(cx, cy, r, passDeg, passDeg + ((1 - passPct) * 360 || 0.001));
+        svg.innerHTML = `
+            <path d="${pPath}" fill="#00D4AA" stroke="#0F1923" stroke-width="0.5"/>
+            <path d="${fPath}" fill="#E74C3C" stroke="#0F1923" stroke-width="0.5"/>
+            <circle cx="${cx}" cy="${cy}" r="${ir}" fill="#0F1923"/>
+            <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="11" fill="#fff" font-weight="700" font-family="Segoe UI,sans-serif">${(passPct * 100).toFixed(0)}%</text>
+            <text x="${cx}" y="${cy + 9}" text-anchor="middle" font-size="5.5" fill="#8B9BAA" font-family="Segoe UI,sans-serif">${passed}/${total}</text>
+        `;
     }
 
     // Inicializar Chart.js
@@ -241,6 +281,7 @@
 
         document.getElementById('msgNoData').style.display = 'none';
         document.getElementById('pnlGlobalInfo').style.display = 'block';
+        document.getElementById('pnlPassFailDonut').style.display = 'block';
 
         const groupId = groups[currentGroupIndex];
         const stat = currentData[groupId];
@@ -258,6 +299,9 @@
         document.getElementById('valGlobalFpy').innerText = `${gFpy.toFixed(1)}%`;
         document.getElementById('valGlobalFpy').style.color = colorTitle;
         document.getElementById('valGlobalRatio').innerText = `YIELD TOTAL | OK: ${stat.total_pass}/${stat.total_att}`;
+
+        // Pass/Fail donut
+        renderPassFailDonut(stat.total_pass, stat.total_att);
 
         if (!chartObj) return;
 

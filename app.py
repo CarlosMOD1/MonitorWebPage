@@ -269,6 +269,29 @@ def background_update_worker():
             print(f"❌ [BACKGROUND] Error en hilo de actualizacion: {str(e)}")
 
 
+def filter_real_failures(df):
+    """
+    Filtra 'fallas reales': para cada prevQr, toma el último registro.
+    Si ese último registro es FAILED y tiene más de 24h de antigüedad,
+    se considera falla real (producto que no pudo ser reprocesado).
+    """
+    if df.empty:
+        return df
+    now = datetime.now()
+    cutoff = now - timedelta(hours=24)
+
+    # Último registro por prevQr
+    idx = df.groupby("prevQr")["endtime"].idxmax()
+    last_per_qr = df.loc[idx]
+
+    # Solo los que su último intento fue FAILED y tiene >24h
+    real = last_per_qr[
+        (last_per_qr["resultado"] == "FAILED") &
+        (last_per_qr["endtime"] < cutoff)
+    ]
+    return real
+
+
 def compute_stats(df, date_from, date_to):
     def kpis(d):
         t  = len(d)
@@ -464,6 +487,7 @@ def api_failure_details():
     date_to_str   = request.args.get("to",   datetime.now().strftime("%Y-%m-%d"))
     product       = request.args.get("product", "all")
     falla         = request.args.get("falla", "")
+    real_failures = request.args.get("real_failures", "false").lower() == "true"
 
     try:
         df = GLOBAL_CACHE["df"]
@@ -475,6 +499,9 @@ def api_failure_details():
 
         mask = (df['endtime'] >= dt_from) & (df['endtime'] < dt_to)
         sub = df[mask].copy()
+
+        if real_failures:
+            sub = filter_real_failures(sub)
 
         if product != "all":
             sub = sub[sub["producto"] == product]
@@ -508,6 +535,7 @@ def api_failure_details():
 def api_data():
     date_from_str = request.args.get("from", (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"))
     date_to_str   = request.args.get("to",   datetime.now().strftime("%Y-%m-%d"))
+    real_failures = request.args.get("real_failures", "false").lower() == "true"
 
     try:
         df = GLOBAL_CACHE["df"]
@@ -520,8 +548,48 @@ def api_data():
         # Filtro en RAM 
         mask = (df['endtime'] >= dt_from) & (df['endtime'] < dt_to)
         df_filtered = df[mask].copy()
+
+        # Calcular pass/fail pie con desglose por producto y estación
+        if real_failures and not df_filtered.empty:
+            # Último registro por prevQr (incluye PASSED y FAILED)
+            idx = df_filtered.groupby("prevQr")["endtime"].idxmax()
+            last_per_qr = df_filtered.loc[idx]
+
+            def _pf(d):
+                p = int((d["resultado"] == "PASSED").sum())
+                f = int((d["resultado"] == "FAILED").sum())
+                t = p + f
+                return {
+                    "passed": p,
+                    "failed": f,
+                    "total":  t,
+                    "yield":  round(p / t * 100, 1) if t else 0,
+                }
+
+            pf_overall = _pf(last_per_qr)
+            pf_by_product = {}
+            for prod, grp in last_per_qr.groupby("producto"):
+                pf_by_product[prod] = _pf(grp)
+
+            pf_by_station = {}
+            for sid, grp in last_per_qr.groupby("stationid"):
+                pf_by_station[int(sid)] = _pf(grp)
+
+            pass_fail_pie = {
+                "overall": pf_overall,
+                "byProduct": pf_by_product,
+                "byStation": pf_by_station,
+            }
+
+            # Ahora filtrar solo fallas reales para el resto de stats
+            df_filtered = filter_real_failures(df_filtered)
+        else:
+            pass_fail_pie = None
         
         stats = compute_stats(df_filtered, date_from_str, date_to_str)
+        stats["realFailures"] = real_failures
+        if pass_fail_pie:
+            stats["passFailPie"] = pass_fail_pie
         if GLOBAL_CACHE["last_updated"]:
             stats["cacheUpdated"] = GLOBAL_CACHE["last_updated"].strftime("%Y-%m-%d %H:%M:%S")
         return jsonify(stats)

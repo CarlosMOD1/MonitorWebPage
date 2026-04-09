@@ -36,6 +36,9 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#0F1923;color:#F4F6F8;he
 .btn-refresh{background:#1E6FBA;color:#fff;border:none;padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;font-weight:700}
 .btn-refresh:hover{background:#2E9CDB}
 .btn-refresh:disabled{background:#2C3E50;cursor:not-allowed}
+.btn-real{background:transparent;color:#FF6B35;border:1px solid #FF6B35;padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;font-weight:700;transition:all .15s}
+.btn-real:hover{background:rgba(255,107,53,0.15)}
+.btn-real.active{background:#FF6B35;color:#fff}
 /* KPIs */
 .kpis{display:flex;gap:8px;padding:8px 12px;flex-shrink:0}
 .kpi{flex:1;background:#1A2B3C;border-radius:8px;padding:10px 12px;text-align:center}
@@ -157,6 +160,7 @@ tbody tr:hover td{background:#1E3A5F}
       </div>
       <div class="date-range">
         <button class="btn-refresh" style="background:#8B9BAA;margin-right:10px;" onclick="openMonitor()">Monitor FPY</button>
+        <button class="btn-real" id="btnReal" onclick="toggleRealFailures()">&#9888; Fallas Reales</button>
         <label>From</label>
         <input type="date" id="dateFrom">
         <label>To</label>
@@ -185,10 +189,18 @@ tbody tr:hover td{background:#1E3A5F}
         </div>
       </div>
       <div class="right">
-        <div class="pie-wrap">
-          <div class="section-title">FAILURE DISTRIBUTION</div>
-          <div class="pie-svg-wrap" id="pieSvgWrap">
-            <div class="pie-tooltip" id="pieTooltip"></div>
+        <div style="display:flex;gap:8px;flex:1;overflow:hidden">
+          <div class="pie-wrap" style="flex:1">
+            <div class="section-title">PASS / FAIL</div>
+            <div class="pie-svg-wrap" id="passFailPieWrap">
+              <div class="pie-tooltip" id="passFailTooltip"></div>
+            </div>
+          </div>
+          <div class="pie-wrap" style="flex:1">
+            <div class="section-title">FAILURE DISTRIBUTION</div>
+            <div class="pie-svg-wrap" id="pieSvgWrap">
+              <div class="pie-tooltip" id="pieTooltip"></div>
+            </div>
           </div>
         </div>
         <div class="top3-wrap">
@@ -214,6 +226,7 @@ let DATA          = null;
 let GROUP_NAMES   = [];
 let activeProduct = 'all';
 let activeStation = 'all';
+let realFailuresMode = false;
 
 // ── Default dates ───────────────────────────────────
 function defaultDates() {
@@ -235,7 +248,7 @@ async function loadData(dateFrom, dateTo) {
   showLoading(true, 'Querying in-memory data...');
   setFilterEnabled(false);
   try {
-    const res = await fetch(`/api/data?from=${dateFrom}&to=${dateTo}`);
+    const res = await fetch(`/api/data?from=${dateFrom}&to=${dateTo}&real_failures=${realFailuresMode}`);
     const json = await res.json();
     if (res.status === 503) {
       setStatus(`Server is booting: ${json.error}`, true);
@@ -315,16 +328,41 @@ function getStations() {
 function getCurrentKPI() {
   if (activeStation !== 'all') {
     const st = DATA.stations.find(s => s.id === activeStation);
-    return st || DATA.overall;
+    return st || { total:0, failed:0, passed:0, yield:0, fpy:0 };
   }
   if (activeProduct !== 'all') {
-    return DATA.byProduct[activeProduct] || DATA.overall;
+    return DATA.byProduct[activeProduct] || { total:0, failed:0, passed:0, yield:0, fpy:0 };
   }
   return DATA.overall;
 }
 
 // ── Render KPIs ─────────────────────────────────────
 function renderKPIs() {
+  if (realFailuresMode && DATA.passFailPie) {
+    // En modo fallas reales, usar los datos QR-level del backend
+    const pf = getPassFailData();
+    const total = (pf.total != null) ? pf.total : (pf.passed + pf.failed);
+    const yieldVal = total ? (pf.passed / total * 100) : 0;
+    const yc = yieldColor(yieldVal);
+    document.getElementById('kpiCards').innerHTML = `
+      <div class="kpi" style="border-top:2px solid #2E9CDB">
+        <div class="kv" style="color:#2E9CDB">${fmt(total)}</div>
+        <div class="kl">UNIQUE QRs</div>
+      </div>
+      <div class="kpi" style="border-top:2px solid #FF6B35">
+        <div class="kv" style="color:#FF6B35">${fmt(pf.failed)}</div>
+        <div class="kl">REAL FAILURES</div>
+      </div>
+      <div class="kpi" style="border-top:2px solid ${yc}">
+        <div class="kv" style="color:${yc}">${yieldVal.toFixed(1)}%</div>
+        <div class="kl">YIELD</div>
+      </div>
+      <div class="kpi" style="border-top:2px solid #00D4AA">
+        <div class="kv" style="color:#00D4AA">${fmt(pf.passed)}</div>
+        <div class="kl">PASSED</div>
+      </div>`;
+    return;
+  }
   const k  = getCurrentKPI();
   const yc = yieldColor(k.yield);
   const fc = yieldColor(k.fpy);
@@ -360,17 +398,30 @@ function renderTabs() {
 // ── Render Sidebar ───────────────────────────────────
 function renderSidebar() {
   const sts = getStations();
-  const kpi = getCurrentKPI();
+  const pf = getPassFailData();
+  const totalFails = (realFailuresMode && pf.failed != null) ? pf.failed : getCurrentKPI().failed;
   let html = `<div class="st-item ${activeStation==='all'?'active':''}" onclick="selectStation('all')">
     <span class="sn">All Stations</span>
-    <span class="sf">${fmt(kpi.failed)} failures</span>
+    <span class="sf">${fmt(totalFails)} failures</span>
   </div>`;
   sts.forEach(s => {
-    const yc = yieldColor(s.yield);
+    let yieldVal = s.yield;
+    let failCount = s.failed;
+    if (realFailuresMode && DATA.passFailPie && DATA.passFailPie.byStation) {
+      const stPf = DATA.passFailPie.byStation[s.id];
+      if (stPf) {
+        yieldVal = stPf.yield;
+        failCount = stPf.failed;
+      } else {
+        yieldVal = 100;
+        failCount = 0;
+      }
+    }
+    const yc = yieldColor(yieldVal);
     html += `<div class="st-item ${activeStation===s.id?'active':''}" onclick="selectStation(${s.id})">
       <span class="sn">${s.name}</span>
-      <div class="sy-bar"><div class="sy-fill" style="width:${s.yield}%;background:${yc}"></div></div>
-      <span class="sf">${fmt(s.failed)} failures</span>
+      <div class="sy-bar"><div class="sy-fill" style="width:${yieldVal}%;background:${yc}"></div></div>
+      <span class="sf">${fmt(failCount)} ${realFailuresMode ? 'real failures' : 'failures'}</span>
     </div>`;
   });
   document.getElementById('stList').innerHTML = html;
@@ -526,8 +577,9 @@ function renderPeriod() {
   const df   = new Date(DATA.overall.dateFrom + 'T00:00:00');
   const dt   = new Date(DATA.overall.dateTo   + 'T00:00:00');
   const opts = {day:'2-digit', month:'short', year:'numeric'};
-  document.getElementById('periodLabel').textContent =
-    df.toLocaleDateString('es-MX', opts) + ' – ' + dt.toLocaleDateString('es-MX', opts);
+  let text = df.toLocaleDateString('es-MX', opts) + ' – ' + dt.toLocaleDateString('es-MX', opts);
+  if (realFailuresMode) text += '  ⚠ FALLAS REALES';
+  document.getElementById('periodLabel').textContent = text;
 }
 
 // ── Interactions ─────────────────────────────────────
@@ -542,6 +594,109 @@ function selectStation(sid) {
   render();
 }
 
+function toggleRealFailures() {
+  realFailuresMode = !realFailuresMode;
+  const btn = document.getElementById('btnReal');
+  btn.classList.toggle('active', realFailuresMode);
+  btn.innerHTML = realFailuresMode ? '&#9888; Total Fallas' : '&#9888; Fallas Reales';
+  applyDateFilter();
+}
+
+// ── Render Pass/Fail Pie ─────────────────────────────
+function getPassFailData() {
+  // Real failures mode: use backend QR-level pass/fail data
+  if (realFailuresMode && DATA.passFailPie) {
+    const pf = DATA.passFailPie;
+    // Station-level: return zeros if station not found
+    if (activeStation !== 'all') {
+      if (pf.byStation && pf.byStation[activeStation]) {
+        return pf.byStation[activeStation];
+      }
+      return { passed: 0, failed: 0, total: 0, yield: 0 };
+    }
+    // Product-level: return zeros if product not found
+    if (activeProduct !== 'all') {
+      if (pf.byProduct && pf.byProduct[activeProduct]) {
+        return pf.byProduct[activeProduct];
+      }
+      return { passed: 0, failed: 0, total: 0, yield: 0 };
+    }
+    return pf.overall;
+  }
+  // Normal mode: use existing KPI data (already filtered by product/station)
+  const k = getCurrentKPI();
+  return { passed: k.passed, failed: k.failed };
+}
+
+function renderPassFailPie() {
+  const wrap = document.getElementById('passFailPieWrap');
+  const pf = getPassFailData();
+  const passed = pf.passed || 0;
+  const failed = pf.failed || 0;
+  const total = passed + failed;
+
+  if (!total) {
+    wrap.innerHTML = '<div class="pie-tooltip" id="passFailTooltip"></div><div class="no-data" style="margin:auto">No data</div>';
+    return;
+  }
+
+  const cx = 100, cy = 100, r = 75;
+  const passPct = passed / total;
+  const failPct = failed / total;
+  const passDeg = passPct * 360;
+
+  let paths = '';
+  if (passed > 0) {
+    const passPath = slicePath(cx, cy, r, 0, passDeg);
+    paths += `<path d="${passPath}" fill="#00D4AA" stroke="#0F1923" stroke-width="1"
+      onmouseenter="pfSliceEnter(this,event)" onmouseleave="pfSliceLeave(this)" onmousemove="pfSliceMove(event)"
+      data-name="PASSED" data-qty="${passed}" data-pct="${(passPct*100).toFixed(1)}%"/>`;
+  }
+  if (failed > 0) {
+    const failPath = slicePath(cx, cy, r, passDeg, passDeg + failPct * 360);
+    paths += `<path d="${failPath}" fill="#E74C3C" stroke="#0F1923" stroke-width="1"
+      onmouseenter="pfSliceEnter(this,event)" onmouseleave="pfSliceLeave(this)" onmousemove="pfSliceMove(event)"
+      data-name="FAILED" data-qty="${failed}" data-pct="${(failPct*100).toFixed(1)}%"/>`;
+  }
+
+  // Center label
+  const yieldPct = (passPct * 100).toFixed(1);
+  const labels = `
+    <text x="${cx}" y="${cy-4}" text-anchor="middle" font-size="12" fill="#fff" font-family="Segoe UI,Arial,sans-serif" font-weight="700">${yieldPct}%</text>
+    <text x="${cx}" y="${cy+10}" text-anchor="middle" font-size="6" fill="#8B9BAA" font-family="Segoe UI,Arial,sans-serif">${fmt(passed)} / ${fmt(total)}</text>
+  `;
+
+  const svg = `<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    ${paths}
+    <circle cx="${cx}" cy="${cy}" r="45" fill="#1A2B3C"/>
+    ${labels}
+  </svg>`;
+  wrap.innerHTML = '<div class="pie-tooltip" id="passFailTooltip"></div>' + svg;
+}
+
+function pfSliceEnter(el, evt) {
+  const tip = document.getElementById('passFailTooltip');
+  tip.textContent = `${el.dataset.name}  ${el.dataset.pct}  (${parseInt(el.dataset.qty).toLocaleString('en-US')})`;
+  tip.style.opacity = '1';
+  pfSliceMove(evt);
+}
+function pfSliceLeave(el) {
+  const tip = document.getElementById('passFailTooltip');
+  if (tip) tip.style.opacity = '0';
+}
+function pfSliceMove(evt) {
+  const tip = document.getElementById('passFailTooltip');
+  if (!tip || tip.style.opacity === '0') return;
+  const wrap = document.getElementById('passFailPieWrap');
+  const rect = wrap.getBoundingClientRect();
+  let lx = evt.clientX - rect.left + 12;
+  let ly = evt.clientY - rect.top - 10;
+  if (lx + tip.offsetWidth > rect.width) lx = evt.clientX - rect.left - tip.offsetWidth - 12;
+  if (ly < 0) ly = 4;
+  tip.style.left = lx + 'px';
+  tip.style.top  = ly + 'px';
+}
+
 // ── Main render ──────────────────────────────────────
 function render() {
   if (!DATA) return;
@@ -550,6 +705,7 @@ function render() {
   renderKPIs();
   renderSidebar();
   renderTable();
+  renderPassFailPie();
   renderPieTop3();
 }
 
@@ -574,7 +730,7 @@ async function showDetails(falla) {
   document.getElementById('detailsModal').style.display = 'flex';
 
   try {
-    const url = `/api/failure_details?from=${from}&to=${to}&product=${prod}&falla=${encodeURIComponent(falla)}`;
+    const url = `/api/failure_details?from=${from}&to=${to}&product=${prod}&falla=${encodeURIComponent(falla)}&real_failures=${realFailuresMode}`;
     const resp = await fetch(url);
     const data = await resp.json();
     if (!resp.ok) {

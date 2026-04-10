@@ -221,7 +221,7 @@ def prepare_dataframe(df):
 def load_historical_data():
     """Carga 1 año de datos desde la BD al arrancar el servidor."""
     print(" [DATABASE] Iniciando carga de datos historicos (ultimo año)...")
-    start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     conn = connect()
     
     query = SQL + f" AND e.endtime >= '{start_date}'"
@@ -245,6 +245,7 @@ def background_update_worker():
             print("[BACKGROUND] Refrescando registros recientes de DB...")
             cutoff_dt = datetime.now() - timedelta(days=2)
             cutoff_str = cutoff_dt.strftime("%Y-%m-%d")
+            cutoff_ts  = pd.to_datetime(cutoff_str)   # medianoche, sin hora
             
             conn = connect()
             query = SQL + f" AND e.endtime >= '{cutoff_str}'"
@@ -256,7 +257,8 @@ def background_update_worker():
             current_df = GLOBAL_CACHE["df"]
             
             # Borrar los datos viejos de los ultimos 2 dias del historico
-            old_data = current_df[current_df['endtime'] < cutoff_dt]
+            # Usar cutoff_ts (medianoche) para que coincida con el filtro SQL
+            old_data = current_df[current_df['endtime'] < cutoff_ts]
             
             # Unir los datos recien consultados
             new_df = pd.concat([old_data, df_recent], ignore_index=True)

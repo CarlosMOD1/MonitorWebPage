@@ -437,7 +437,9 @@ function renderTable() {
   } else {
     rows.slice(0, 60).forEach(r => {
       const pct = Math.round(r.qty / maxQ * 100);
-      html += `<tr style="cursor:pointer" onclick="showDetails('${r.falla.replace(/'/g, "\\'")  }')">
+      const safeFalla = r.falla.replace(/'/g, "\\'");
+      const safeStation = r.sname.replace(/'/g, "\\'");
+      html += `<tr style="cursor:pointer" onclick="showDetails('${safeFalla}', ${r.sid}, '${safeStation}')">
         <td style="color:#8B9BAA">${r.falla}</td>
         <td style="color:#8B9BAA;font-size:10px">${r.sname}</td>
         <td style="color:#00D4AA;font-weight:700;text-align:center">${fmt(r.qty)}</td>
@@ -762,19 +764,26 @@ async function showPassFailDetails(resultado) {
   }
 }
 
-async function showDetails(falla) {
+async function showDetails(falla, stationId = null, stationName = '') {
   if (!falla) return;
   const from = document.getElementById('dateFrom').value;
   const to   = document.getElementById('dateTo').value;
   const prod = activeProduct;
+  const effectiveStationId = (stationId != null) ? stationId : activeStation;
+  const stationFilter = (effectiveStationId !== 'all' && effectiveStationId != null)
+    ? `&stationid=${encodeURIComponent(effectiveStationId)}`
+    : '';
 
-  document.getElementById('modalTitle').innerText = (prod !== 'all' ? prod + ' — ' : '') + falla;
+  const stationLabel = stationName || (effectiveStationId !== 'all' && effectiveStationId != null ? `Station ${effectiveStationId}` : '');
+  const titlePrefix = (prod !== 'all' ? prod + ' — ' : '') + (stationLabel ? stationLabel + ' — ' : '');
+
+  document.getElementById('modalTitle').innerText = titlePrefix + falla;
   const tbody = document.querySelector('#modalTable tbody');
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Cargando datos...</td></tr>';
   document.getElementById('detailsModal').style.display = 'flex';
 
   try {
-    const url = `/api/failure_details?from=${from}&to=${to}&product=${prod}&falla=${encodeURIComponent(falla)}&real_failures=${realFailuresMode}`;
+    const url = `/api/failure_details?from=${from}&to=${to}&product=${prod}${stationFilter}&falla=${encodeURIComponent(falla)}&real_failures=${realFailuresMode}`;
     const resp = await fetch(url);
     const data = await resp.json();
     if (!resp.ok) {

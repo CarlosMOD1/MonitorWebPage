@@ -29,6 +29,17 @@ DB_NAME   = os.getenv("DB_NAME")
 DB_USER   = os.getenv("DB_USER")
 DB_PASS   = os.getenv("DB_PASS")
 
+# Constantes de comportamiento del dashboard
+HISTORICAL_LOAD_DAYS = 30
+RECENT_REFRESH_DAYS = 2
+REFRESH_INTERVAL_MINUTES = 15
+REAL_FAILURE_HOURS = 3
+DEFAULT_QUERY_RANGE_DAYS = 30
+DEBUG_ENDPOINT_RANGE_DAYS = 7
+DETAILS_MAX_RECORDS = 500
+DB_CONNECT_TIMEOUT_SECONDS = 60
+DEFAULT_APP_PORT = 5000
+
 GROUPS = {
     "SPSF":        [178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232],
     "C-Track":     [238,239,241,333],
@@ -202,7 +213,7 @@ def connect():
         f"PWD={DB_PASS};"
         f"Encrypt=yes;TrustServerCertificate=no;"
     )
-    return pyodbc.connect(conn_str, timeout=60)
+    return pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT_SECONDS)
 
 def prepare_dataframe(df):
     """Pre-calcula columnas pesadas para evitar demoras en los endpoints."""
@@ -221,7 +232,7 @@ def prepare_dataframe(df):
 def load_historical_data():
     """Carga 1 año de datos desde la BD al arrancar el servidor."""
     print(" [DATABASE] Iniciando carga de datos historicos (ultimo año)...")
-    start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=HISTORICAL_LOAD_DAYS)).strftime("%Y-%m-%d")
     conn = connect()
     
     query = SQL + f" AND e.endtime >= '{start_date}'"
@@ -240,10 +251,10 @@ def background_update_worker():
     los ultimos 2 dias y los inyecta a la memoria global.
     """
     while True:
-        time.sleep(15 * 60) # 15 min de espera
+        time.sleep(REFRESH_INTERVAL_MINUTES * 60)
         try:
             print("[BACKGROUND] Refrescando registros recientes de DB...")
-            cutoff_dt = datetime.now() - timedelta(days=2)
+            cutoff_dt = datetime.now() - timedelta(days=RECENT_REFRESH_DAYS)
             cutoff_str = cutoff_dt.strftime("%Y-%m-%d")
             cutoff_ts  = pd.to_datetime(cutoff_str)   # medianoche, sin hora
             
@@ -280,7 +291,7 @@ def filter_real_failures(df):
     if df.empty:
         return df
     now = datetime.now()
-    cutoff = now - timedelta(hours=24)
+    cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
 
     # Último registro por prevQr
     idx = df.groupby("prevQr")["endtime"].idxmax()
@@ -445,7 +456,7 @@ def api_monitor_data():
 @app.route("/api/debug/<grupo>")
 def api_debug(grupo):
     """Muestra notas crudas de filas FAILED para un grupo dado. Solo para desarrollo."""
-    default_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    default_from = (datetime.now() - timedelta(days=DEBUG_ENDPOINT_RANGE_DAYS)).strftime("%Y-%m-%d")
     default_to   = datetime.now().strftime("%Y-%m-%d")
     ids = GROUPS.get(grupo, [])
     if not ids:
@@ -485,9 +496,10 @@ def api_debug(grupo):
 @app.route("/api/failure_details")
 def api_failure_details():
     """Devuelve registros individuales de fallas filtrados por producto y tipo de falla."""
-    date_from_str = request.args.get("from", (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"))
+    date_from_str = request.args.get("from", (datetime.now() - timedelta(days=DEFAULT_QUERY_RANGE_DAYS)).strftime("%Y-%m-%d"))
     date_to_str   = request.args.get("to",   datetime.now().strftime("%Y-%m-%d"))
     product       = request.args.get("product", "all")
+    station_id_str = request.args.get("stationid", "all")
     falla         = request.args.get("falla", "")
     real_failures = request.args.get("real_failures", "false").lower() == "true"
 
@@ -508,14 +520,21 @@ def api_failure_details():
         if product != "all":
             sub = sub[sub["producto"] == product]
 
+        if station_id_str != "all":
+            try:
+                station_id = int(station_id_str)
+                sub = sub[sub["stationid"] == station_id]
+            except ValueError:
+                return jsonify({"error": "stationid invalido"}), 400
+
         # Solo registros FAILED
         sub = sub[sub["resultado"] == "FAILED"]
 
         if falla:
             sub = sub[sub["tipoFalla"] == falla]
 
-        # Limitar a 500 registros
-        sub = sub.head(500)
+        # Limitar cantidad de registros de respuesta
+        sub = sub.head(DETAILS_MAX_RECORDS)
 
         records = []
         for _, r in sub.iterrows():
@@ -536,7 +555,7 @@ def api_failure_details():
 @app.route("/api/passfail_details")
 def api_passfail_details():
     """Devuelve registros del último intento por QR, filtrados por resultado (PASSED/FAILED)."""
-    date_from_str = request.args.get("from", (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"))
+    date_from_str = request.args.get("from", (datetime.now() - timedelta(days=DEFAULT_QUERY_RANGE_DAYS)).strftime("%Y-%m-%d"))
     date_to_str   = request.args.get("to",   datetime.now().strftime("%Y-%m-%d"))
     product       = request.args.get("product", "all")
     resultado     = request.args.get("resultado", "")  # PASSED o FAILED
@@ -562,7 +581,7 @@ def api_passfail_details():
         if real_failures:
             # Último registro por prevQr
             now = datetime.now()
-            cutoff = now - timedelta(hours=24)
+            cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
             idx = sub.groupby("prevQr")["endtime"].idxmax()
             last_per_qr = sub.loc[idx]
             # Solo los relevantes (passed o failed >24h)
@@ -574,7 +593,7 @@ def api_passfail_details():
         if resultado:
             sub = sub[sub["resultado"] == resultado]
 
-        sub = sub.sort_values("endtime", ascending=False).head(500)
+        sub = sub.sort_values("endtime", ascending=False).head(DETAILS_MAX_RECORDS)
 
         records = []
         for _, r in sub.iterrows():
@@ -595,7 +614,7 @@ def api_passfail_details():
 
 @app.route("/api/data")
 def api_data():
-    date_from_str = request.args.get("from", (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"))
+    date_from_str = request.args.get("from", (datetime.now() - timedelta(days=DEFAULT_QUERY_RANGE_DAYS)).strftime("%Y-%m-%d"))
     date_to_str   = request.args.get("to",   datetime.now().strftime("%Y-%m-%d"))
     real_failures = request.args.get("real_failures", "false").lower() == "true"
 
@@ -615,7 +634,7 @@ def api_data():
         if real_failures and not df_filtered.empty:
             # Último registro por prevQr (incluye PASSED y FAILED)
             now = datetime.now()
-            cutoff = now - timedelta(hours=24)
+            cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
             idx = df_filtered.groupby("prevQr")["endtime"].idxmax()
             last_per_qr = df_filtered.loc[idx]
 
@@ -676,7 +695,7 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_update_worker, daemon=True)
     bg_thread.start()
     
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", DEFAULT_APP_PORT))
     print(f"\n  Manufacturing Dashboard iniciado")
     print(f"  Abre en tu navegador: http://localhost:{port}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

@@ -131,8 +131,6 @@ tbody tr:hover td{background:#1E3A5F}
 .ac-metric{flex:1;background:#0A1420;border-radius:5px;padding:5px 7px}
 .ac-metric-label{font-size:8px;color:#5A6A7A;font-weight:700;letter-spacing:.8px;margin-bottom:3px;text-transform:uppercase}
 .ac-metric-val{font-size:15px;font-weight:700;line-height:1}
-.ac-metric-val.drop{color:#FF5A5F}
-.ac-metric-val.ok{color:#00D4AA}
 .ac-metric-sub{font-size:8px;color:#5A6A7A;margin-top:2px}
 .ac-tag{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;margin-top:7px;letter-spacing:.3px}
 .ac-tag.drop-tag{background:rgba(231,76,60,.12);color:#FF5A5F;border:1px solid rgba(231,76,60,.25)}
@@ -1002,20 +1000,28 @@ function renderAnomalies(data) {
     const worstDrop  = a.drop_alerts.length ? a.drop_alerts[0] : null;
     const streak     = a.streak;
 
-    // Left metric box — FPY drop (if any)
+    // Left metric box — FPY drop: color the actual reading by its level so
+    // operators instantly see whether 87% is "bad" vs 99% is "barely flagged".
+    // The norm reference is also colored so the gap is visually obvious.
     const dropBox = worstDrop ? `
       <div class="ac-metric">
         <div class="ac-metric-label">FPY Drop</div>
-        <div class="ac-metric-val drop">${worstDrop.fpy}%</div>
-        <div class="ac-metric-sub">norm ${worstDrop.mean}% @ ${worstDrop.hour}</div>
+        <div class="ac-metric-val" style="color:${yieldColor(worstDrop.fpy)}">${worstDrop.fpy}%</div>
+        <div class="ac-metric-sub">vs <span style="color:${yieldColor(worstDrop.mean)}">${worstDrop.mean}%</span> norm &middot; ${worstDrop.hour}</div>
       </div>` : '';
 
-    // Right metric box — streak (if any)
+    // Right metric box — streak: show where FPY started (colored green/yellow
+    // to show it was acceptable) and where it ended (colored red/yellow to show
+    // how far it fell). Reading left-to-right tells the whole story at a glance.
     const streakBox = streak ? `
       <div class="ac-metric">
-        <div class="ac-metric-label">${streak.hours}h Streak</div>
-        <div class="ac-metric-val drop">${streak.fpy_end}%</div>
-        <div class="ac-metric-sub">${streak.fpy_start}% &#8594; ${streak.fpy_end}% (&#8722;${streak.drop_pts}pt)</div>
+        <div class="ac-metric-label">${streak.hours}h Decline</div>
+        <div class="ac-metric-val">
+          <span style="color:${yieldColor(streak.fpy_start)}">${streak.fpy_start}%</span>
+          <span style="color:#3A4A5A;font-size:11px;margin:0 3px">&#8594;</span>
+          <span style="color:${yieldColor(streak.fpy_end)}">${streak.fpy_end}%</span>
+        </div>
+        <div class="ac-metric-sub">&#8722;${streak.drop_pts} pts &middot; ${streak.from} &#8594; ${streak.to}</div>
       </div>` : '';
 
     // Tag chips — concise action labels

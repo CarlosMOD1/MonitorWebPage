@@ -704,6 +704,7 @@ function selectProduct(prod) {
   activeStation = 'all';
   saveFilters();
   render();
+  loadAnomalies();
 }
 
 function selectStation(sid) {
@@ -942,7 +943,8 @@ function toggleAnomalyPanel() {
 
 async function loadAnomalies() {
   try {
-    const res  = await fetch('/api/anomalies');
+    const product = (typeof activeProduct !== 'undefined' && activeProduct) ? activeProduct : 'all';
+    const res  = await fetch(`/api/anomalies?product=${encodeURIComponent(product)}`);
     const data = await res.json();
     renderAnomalies(data);
   } catch (_) {}

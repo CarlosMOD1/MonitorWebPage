@@ -55,6 +55,7 @@ ANOMALY_ZSCORE_THRESHOLD = 2.0   # sigma below mean to flag a drop
 ANOMALY_MIN_SAMPLES      = 12    # minimum active hours needed to compute baseline
 ANOMALY_STREAK_MIN_HOURS = 3     # consecutive declining hours to flag a streak
 ANOMALY_WORK_HOUR_START  = 7     # ignore hours 00:00–06:59 (no production)
+ANOMALY_MIN_TESTS_PER_HOUR = 3  # ignore sparse hours (shift start, short breaks)
 
 GROUPS = {
     "SPSF":        [178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232],
@@ -473,10 +474,13 @@ def compute_anomalies(df: pd.DataFrame) -> list:
         )
         hourly["fpy"] = hourly["passed"] / hourly["total"] * 100
 
-        # Exclude overnight dead hours from both the baseline and the detection window.
-        # Hours 00:00–06:59 have no production; including them would dilute the rolling
-        # mean with near-zero FPY readings and generate false streak detections.
-        hourly = hourly[hourly.index.hour >= ANOMALY_WORK_HOUR_START]
+        # Drop overnight dead hours (00:00–06:59) and sparse hours (shift start, breaks).
+        # Hours with < ANOMALY_MIN_TESTS_PER_HOUR units give unstable FPY (e.g. 0/1 = 0%)
+        # that would corrupt the rolling baseline and trigger false drop/streak alerts.
+        hourly = hourly[
+            (hourly.index.hour >= ANOMALY_WORK_HOUR_START) &
+            (hourly["total"] >= ANOMALY_MIN_TESTS_PER_HOUR)
+        ]
 
         if len(hourly) < ANOMALY_MIN_SAMPLES:
             continue
@@ -903,9 +907,13 @@ def api_data():
 
 @app.route("/api/anomalies")
 def api_anomalies():
+    product = request.args.get("product", "all")
+    alerts  = _ANOMALY_CACHE["alerts"]
+    if product != "all":
+        alerts = [a for a in alerts if a["product"] == product]
     return jsonify({
-        "alerts":      _ANOMALY_CACHE["alerts"],
-        "count":       len(_ANOMALY_CACHE["alerts"]),
+        "alerts":      alerts,
+        "count":       len(alerts),
         "computed_at": _ANOMALY_CACHE["computed_at"],
     })
 

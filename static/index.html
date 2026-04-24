@@ -75,31 +75,69 @@ tbody tr:hover td{background:#1E3A5F}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-msg{font-size:13px;color:#8B9BAA}
 .loading-overlay.hidden{display:none}
-/* Anomaly alert panel */
-.anomaly-panel{background:#0A1420;border-bottom:1px solid #1A2B3C;flex-shrink:0}
-.anomaly-header{display:flex;align-items:center;gap:8px;padding:5px 14px;cursor:pointer;user-select:none}
-.anomaly-header:hover{background:#111D2B}
-.anomaly-title{font-size:10px;font-weight:700;color:#8B9BAA;letter-spacing:1px}
-.anomaly-badge{font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;letter-spacing:.5px}
-.anomaly-badge.critical{background:#E74C3C;color:#fff}
-.anomaly-badge.warning{background:#F1C40F;color:#0A1420}
-.anomaly-badge.ok{background:#00D4AA;color:#0A1420}
-.anomaly-ts{font-size:9px;color:#2C3E50;margin-left:auto}
-.anomaly-chevron{font-size:9px;color:#2C3E50;transition:transform .2s}
-.anomaly-chevron.open{transform:rotate(180deg)}
-.anomaly-body{padding:6px 14px 10px;display:flex;gap:8px;flex-wrap:wrap;overflow-x:auto}
-.alert-card{background:#142131;border-radius:6px;padding:8px 12px;min-width:220px;max-width:280px;flex-shrink:0;border-left:3px solid #2C3E50}
-.alert-card.critical{border-left-color:#E74C3C}
-.alert-card.warning{border-left-color:#F1C40F}
-.ac-header{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-.ac-sev{font-size:8px;font-weight:700;padding:1px 5px;border-radius:4px;letter-spacing:.5px}
-.ac-sev.critical{background:#E74C3C;color:#fff}
-.ac-sev.warning{background:#F1C40F;color:#0A1420}
-.ac-name{font-size:11px;font-weight:700;color:#F4F6F8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ac-prod{font-size:9px;color:#2E9CDB;margin-left:auto;white-space:nowrap}
-.ac-row{font-size:10px;color:#8B9BAA;margin-top:3px;display:flex;gap:4px;align-items:baseline}
-.ac-row b{color:#F4F6F8}
-.ac-row .hi{color:#E74C3C}
+/* ── Anomaly alert panel ───────────────────────────── */
+.anomaly-panel{background:#0A1420;border-bottom:2px solid #1A2B3C;flex-shrink:0;overflow:hidden}
+.anomaly-panel.has-critical{border-bottom-color:#E74C3C}
+.anomaly-panel.has-warning{border-bottom-color:#F1C40F}
+
+/* Header bar */
+.anomaly-header{display:flex;align-items:center;gap:10px;padding:6px 16px;cursor:pointer;user-select:none;transition:background .15s}
+.anomaly-header:hover{background:#0d1c2b}
+.ap-icon{font-size:13px;line-height:1}
+.ap-title{font-size:10px;font-weight:700;color:#5A6A7A;letter-spacing:1.2px;text-transform:uppercase}
+.ap-status{font-size:11px;font-weight:700;display:flex;align-items:center;gap:5px}
+.ap-status.ok{color:#00D4AA}
+.ap-status.warning{color:#F1C40F}
+.ap-status.critical{color:#FF5A5F}
+.ap-counts{display:flex;gap:5px;margin-left:2px}
+.ap-pill{font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;letter-spacing:.5px}
+.ap-pill.critical{background:rgba(231,76,60,.2);color:#FF5A5F;border:1px solid rgba(231,76,60,.4)}
+.ap-pill.warning{background:rgba(241,196,15,.15);color:#F1C40F;border:1px solid rgba(241,196,15,.35)}
+.ap-ts{font-size:9px;color:#2C3E50;margin-left:auto}
+.ap-chevron{font-size:10px;color:#2C3E50;transition:transform .25s;margin-left:6px}
+.ap-chevron.open{transform:rotate(180deg)}
+
+/* Pulsing dot for critical */
+@keyframes ap-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.7)}}
+.ap-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.ap-dot.critical{background:#FF5A5F;animation:ap-pulse 1.4s ease-in-out infinite}
+.ap-dot.warning{background:#F1C40F}
+.ap-dot.ok{background:#00D4AA}
+
+/* Cards tray */
+.anomaly-body{padding:8px 16px 12px;display:flex;gap:10px;overflow-x:auto;overflow-y:hidden}
+.anomaly-body::-webkit-scrollbar{height:3px}
+.anomaly-body::-webkit-scrollbar-track{background:transparent}
+.anomaly-body::-webkit-scrollbar-thumb{background:#1E3A5F;border-radius:2px}
+
+/* Alert card */
+.alert-card{
+  background:#101E2C;border:1px solid #1E3A5F;border-radius:8px;
+  padding:10px 14px;min-width:210px;max-width:240px;flex-shrink:0;
+  border-top:3px solid #1E3A5F;position:relative;overflow:hidden;
+  transition:border-color .2s,box-shadow .2s;cursor:default
+}
+.alert-card::before{content:'';position:absolute;inset:0;pointer-events:none;border-radius:8px;transition:opacity .2s}
+.alert-card.critical{border-top-color:#E74C3C;box-shadow:0 0 0 0 rgba(231,76,60,0)}
+.alert-card.warning{border-top-color:#F1C40F}
+.alert-card.critical.pulse-glow{animation:card-glow 2s ease-in-out infinite}
+@keyframes card-glow{0%,100%{box-shadow:0 0 0 0 rgba(231,76,60,0)}50%{box-shadow:0 0 12px 2px rgba(231,76,60,.25)}}
+
+/* Card content */
+.ac-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;gap:6px}
+.ac-station{font-size:12px;font-weight:700;color:#E6EDF3;line-height:1.3;max-width:155px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-prod-pill{font-size:8px;font-weight:700;padding:2px 6px;border-radius:8px;background:#0F2A3F;color:#2E9CDB;border:1px solid #1E3A5F;white-space:nowrap;flex-shrink:0;margin-top:1px}
+.ac-metrics{display:flex;gap:8px}
+.ac-metric{flex:1;background:#0A1420;border-radius:5px;padding:5px 7px}
+.ac-metric-label{font-size:8px;color:#5A6A7A;font-weight:700;letter-spacing:.8px;margin-bottom:3px;text-transform:uppercase}
+.ac-metric-val{font-size:15px;font-weight:700;line-height:1}
+.ac-metric-val.drop{color:#FF5A5F}
+.ac-metric-val.ok{color:#00D4AA}
+.ac-metric-sub{font-size:8px;color:#5A6A7A;margin-top:2px}
+.ac-tag{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;margin-top:7px;letter-spacing:.3px}
+.ac-tag.drop-tag{background:rgba(231,76,60,.12);color:#FF5A5F;border:1px solid rgba(231,76,60,.25)}
+.ac-tag.streak-tag{background:rgba(241,196,15,.1);color:#F1C40F;border:1px solid rgba(241,196,15,.25)}
+.ac-tags{display:flex;gap:5px;flex-wrap:wrap}
 /* Status bar */
 .status-bar{background:#0A1420;border-top:1px solid #1A2B3C;padding:3px 14px;font-size:9px;color:#2C3E50;display:flex;gap:16px;flex-shrink:0}
 .status-bar .ok{color:#00D4AA}
@@ -172,10 +210,13 @@ tbody tr:hover td{background:#1E3A5F}
 <!-- Anomaly alert panel -->
 <div class="anomaly-panel" id="anomalyPanel">
   <div class="anomaly-header" onclick="toggleAnomalyPanel()">
-    <span class="anomaly-title">&#128202; ANOMALY DETECTION</span>
-    <span class="anomaly-badge ok" id="anomalyBadge">SCANNING...</span>
-    <span class="anomaly-ts" id="anomalyTs"></span>
-    <span class="anomaly-chevron" id="anomalyChevron">&#9660;</span>
+    <span class="ap-icon">&#9889;</span>
+    <span class="ap-title">Anomaly Detection</span>
+    <span class="ap-dot ok" id="apDot"></span>
+    <span class="ap-status ok" id="apStatus">Scanning...</span>
+    <span class="ap-counts" id="apCounts"></span>
+    <span class="ap-ts" id="apTs"></span>
+    <span class="ap-chevron" id="apChevron">&#9660;</span>
   </div>
   <div id="anomalyBody" style="display:none">
     <div class="anomaly-body" id="anomalyCards"></div>
@@ -890,12 +931,13 @@ async function showDetails(falla, stationId = null, stationName = '') {
 }
 
 // ── Anomaly panel ────────────────────────────────────
-let _anomalyOpen = false;
+let _anomalyOpen     = false;
+let _anomalyWasShown = false;   // track if panel was ever auto-opened
 
 function toggleAnomalyPanel() {
   _anomalyOpen = !_anomalyOpen;
-  document.getElementById('anomalyBody').style.display    = _anomalyOpen ? 'block' : 'none';
-  document.getElementById('anomalyChevron').classList.toggle('open', _anomalyOpen);
+  document.getElementById('anomalyBody').style.display = _anomalyOpen ? 'block' : 'none';
+  document.getElementById('apChevron').classList.toggle('open', _anomalyOpen);
 }
 
 async function loadAnomalies() {
@@ -907,17 +949,28 @@ async function loadAnomalies() {
 }
 
 function renderAnomalies(data) {
-  const alerts     = data.alerts || [];
-  const badge      = document.getElementById('anomalyBadge');
-  const tsEl       = document.getElementById('anomalyTs');
-  const cardsEl    = document.getElementById('anomalyCards');
+  const alerts   = data.alerts || [];
+  const panel    = document.getElementById('anomalyPanel');
+  const dot      = document.getElementById('apDot');
+  const statusEl = document.getElementById('apStatus');
+  const countsEl = document.getElementById('apCounts');
+  const tsEl     = document.getElementById('apTs');
+  const cardsEl  = document.getElementById('anomalyCards');
 
-  if (data.computed_at) tsEl.textContent = 'Last scan: ' + data.computed_at;
+  if (data.computed_at) {
+    // Show only the time portion — date is today by definition
+    tsEl.textContent = 'Scanned ' + data.computed_at.slice(11, 16);
+  }
 
   if (!alerts.length) {
-    badge.textContent = 'ALL CLEAR';
-    badge.className   = 'anomaly-badge ok';
-    cardsEl.innerHTML = '<div style="font-size:10px;color:#00D4AA;padding:4px 0">No anomalies detected in the last 24 h.</div>';
+    panel.className    = 'anomaly-panel';
+    dot.className      = 'ap-dot ok';
+    statusEl.className = 'ap-status ok';
+    statusEl.textContent = 'All Clear — 24 h';
+    countsEl.innerHTML = '';
+    cardsEl.innerHTML  = '';
+    // Collapse if it was previously open due to an alert
+    if (_anomalyOpen) toggleAnomalyPanel();
     return;
   }
 
@@ -925,40 +978,65 @@ function renderAnomalies(data) {
   const warnCount = alerts.length - critCount;
 
   if (critCount > 0) {
-    badge.textContent = critCount + ' CRITICAL' + (warnCount ? '  +' + warnCount + ' WARN' : '');
-    badge.className   = 'anomaly-badge critical';
-    // Auto-expand on first critical alert
-    if (!_anomalyOpen) toggleAnomalyPanel();
+    panel.className    = 'anomaly-panel has-critical';
+    dot.className      = 'ap-dot critical';
+    statusEl.className = 'ap-status critical';
+    statusEl.textContent = 'Station Alerts';
+    // Auto-open on first critical detection
+    if (!_anomalyOpen && !_anomalyWasShown) { toggleAnomalyPanel(); _anomalyWasShown = true; }
   } else {
-    badge.textContent = warnCount + ' WARNING' + (warnCount > 1 ? 'S' : '');
-    badge.className   = 'anomaly-badge warning';
+    panel.className    = 'anomaly-panel has-warning';
+    dot.className      = 'ap-dot warning';
+    statusEl.className = 'ap-status warning';
+    statusEl.textContent = 'Station Alerts';
   }
 
+  countsEl.innerHTML =
+    (critCount ? `<span class="ap-pill critical">${critCount} CRITICAL</span>` : '') +
+    (warnCount ? `<span class="ap-pill warning">${warnCount} WARNING</span>`  : '');
+
   cardsEl.innerHTML = alerts.map(a => {
-    const dropHtml = a.drop_alerts.length
-      ? `<div class="ac-row">&#9660; <b>${a.drop_alerts.length}</b> drop${a.drop_alerts.length > 1 ? 's' : ''}
-           &nbsp;·&nbsp; worst <b class="hi">${a.drop_alerts[0].fpy}%</b>
-           @ ${a.drop_alerts[0].hour}
-           &nbsp;·&nbsp; z=<b>${a.drop_alerts[0].z_score}</b>
-           &nbsp;·&nbsp; p=<b>${a.drop_alerts[0].p_value}</b>
-         </div>`
+    // Primary metric: worst FPY drop or streak end FPY
+    const worstDrop  = a.drop_alerts.length ? a.drop_alerts[0] : null;
+    const streak     = a.streak;
+
+    // Left metric box — FPY drop (if any)
+    const dropBox = worstDrop ? `
+      <div class="ac-metric">
+        <div class="ac-metric-label">FPY Drop</div>
+        <div class="ac-metric-val drop">${worstDrop.fpy}%</div>
+        <div class="ac-metric-sub">norm ${worstDrop.mean}% @ ${worstDrop.hour}</div>
+      </div>` : '';
+
+    // Right metric box — streak (if any)
+    const streakBox = streak ? `
+      <div class="ac-metric">
+        <div class="ac-metric-label">${streak.hours}h Streak</div>
+        <div class="ac-metric-val drop">${streak.fpy_end}%</div>
+        <div class="ac-metric-sub">${streak.fpy_start}% &#8594; ${streak.fpy_end}% (&#8722;${streak.drop_pts}pt)</div>
+      </div>` : '';
+
+    // Tag chips — concise action labels
+    const dropTag   = worstDrop
+      ? `<span class="ac-tag drop-tag">&#9660; ${a.drop_alerts.length} drop${a.drop_alerts.length > 1 ? 's' : ''}</span>`
+      : '';
+    const streakTag = streak
+      ? `<span class="ac-tag streak-tag">&#8600; ${streak.hours}h decline</span>`
       : '';
 
-    const streakHtml = a.streak
-      ? `<div class="ac-row">&#8595; <b>${a.streak.hours}h</b> streak
-           &nbsp;${a.streak.from}&#8594;${a.streak.to}
-           &nbsp; <b class="hi">${a.streak.fpy_start}% &#8594; ${a.streak.fpy_end}%</b>
-           &nbsp;(&#8722;${a.streak.drop_pts} pts)
-         </div>`
-      : '';
+    // Tooltip with raw stats for power users (z-score, p-value)
+    const tipParts = [];
+    if (worstDrop) tipParts.push(`z=${worstDrop.z_score}  p=${worstDrop.p_value}  threshold=${worstDrop.threshold}%`);
+    if (streak)    tipParts.push(`${streak.from} → ${streak.to}`);
+    const tip = tipParts.join(' | ');
 
-    return `<div class="alert-card ${a.severity}">
-      <div class="ac-header">
-        <span class="ac-sev ${a.severity}">${a.severity.toUpperCase()}</span>
-        <span class="ac-name" title="${a.station_name}">${a.station_name}</span>
-        <span class="ac-prod">${a.product}</span>
+    return `<div class="alert-card ${a.severity}${a.severity === 'critical' ? ' pulse-glow' : ''}" title="${tip}">
+      <div class="ac-top">
+        <span class="ac-station" title="${a.station_name}">${a.station_name}</span>
+        <span class="ac-prod-pill">${a.product}</span>
       </div>
-      ${dropHtml}${streakHtml}
+      <div class="ac-metrics">${dropBox}${streakBox}</div>
+      <div class="ac-tags">${dropTag}${streakTag}</div>
     </div>`;
   }).join('');
 }

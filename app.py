@@ -54,6 +54,7 @@ ANOMALY_LOOKBACK_DAYS    = 7     # baseline window
 ANOMALY_ZSCORE_THRESHOLD = 2.0   # sigma below mean to flag a drop
 ANOMALY_MIN_SAMPLES      = 12    # minimum active hours needed to compute baseline
 ANOMALY_STREAK_MIN_HOURS = 3     # consecutive declining hours to flag a streak
+ANOMALY_WORK_HOUR_START  = 7     # ignore hours 00:00–06:59 (no production)
 
 GROUPS = {
     "SPSF":        [178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232],
@@ -472,10 +473,15 @@ def compute_anomalies(df: pd.DataFrame) -> list:
         )
         hourly["fpy"] = hourly["passed"] / hourly["total"] * 100
 
+        # Exclude overnight dead hours from both the baseline and the detection window.
+        # Hours 00:00–06:59 have no production; including them would dilute the rolling
+        # mean with near-zero FPY readings and generate false streak detections.
+        hourly = hourly[hourly.index.hour >= ANOMALY_WORK_HOUR_START]
+
         if len(hourly) < ANOMALY_MIN_SAMPLES:
             continue
 
-        # Rolling baseline (up to 168 h; requires ANOMALY_MIN_SAMPLES to activate)
+        # Rolling baseline (up to 168 active hours; requires ANOMALY_MIN_SAMPLES to activate)
         roll           = hourly["fpy"].rolling(168, min_periods=ANOMALY_MIN_SAMPLES)
         hourly["mean"] = roll.mean()
         hourly["std"]  = roll.std()

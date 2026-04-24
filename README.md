@@ -17,17 +17,16 @@ pip install flask pyodbc pandas waitress
 
 ## 2. Configure Database Connection
 
-Open `app.py` and verify the connection string points to the SQL Server correctly from this machine's network:
+Create a `.env` file in the project root with your SQL Server credentials:
 
-```python
-conn_str = (
-    "DRIVER={ODBC Driver 17 for SQL Server};"
-    "SERVER=YOUR_SERVER_IP;"
-    "DATABASE=YOUR_DB;"
-    "UID=YOUR_USER;"
-    "PWD=YOUR_PASSWORD;"
-)
 ```
+DB_SERVER=YOUR_SERVER_IP
+DB_NAME=YOUR_DB
+DB_USER=YOUR_USER
+DB_PASS=YOUR_PASSWORD
+```
+
+`app.py` reads these values automatically via `python-dotenv`. Never commit the `.env` file to version control.
 
 ---
 
@@ -70,7 +69,7 @@ netsh advfirewall firewall add rule name="Failure Monitoring" dir=in action=allo
 2. **Trigger:** When the computer starts
 3. **Action:** Start a program
    - Program: `python`
-   - Arguments: `C:\path\to\manufacturing-dashboard\serve.py`
+   - Arguments: `C:\Users\JesusMoyaLozano\Desktop\Cowork\MonitorWebPage\serve.py`
 4. Check **"Run whether user is logged on or not"**
 5. Check **"Run with highest privileges"**
 

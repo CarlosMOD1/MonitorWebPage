@@ -7,17 +7,24 @@ Abrir en navegador: http://localhost:5000
 from flask import Flask, jsonify, request, send_from_directory
 import pyodbc
 import pandas as pd
+from scipy import stats as scipy_stats
 import json
 import re
+import logging
+import threading
+import time
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 
-# Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
-import threading
-import time
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder="static")
 
@@ -39,6 +46,14 @@ DEBUG_ENDPOINT_RANGE_DAYS = 7
 DETAILS_MAX_RECORDS = 500
 DB_CONNECT_TIMEOUT_SECONDS = 60
 DEFAULT_APP_PORT = 5000
+DB_RETRY_ATTEMPTS = 3
+DB_RETRY_BASE_DELAY_SECONDS = 30
+
+# Anomaly detection
+ANOMALY_LOOKBACK_DAYS    = 7     # baseline window
+ANOMALY_ZSCORE_THRESHOLD = 2.0   # sigma below mean to flag a drop
+ANOMALY_MIN_SAMPLES      = 12    # minimum active hours needed to compute baseline
+ANOMALY_STREAK_MIN_HOURS = 3     # consecutive declining hours to flag a streak
 
 GROUPS = {
     "SPSF":        [178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232],
@@ -192,7 +207,12 @@ def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
             if result and not _METADATA_RE.match(result):
                 return result
 
-    # Sin notas útiles → failureCode
+    # Notes were present but no pattern matched — log so format changes are visible.
+    if ns:
+        logger.debug(
+            "extract_tipo_falla: unrecognized notes format for station=%r fc=%r notes_prefix=%r",
+            station, fc, ns[:120],
+        )
     return fc
 
 # ─────────────────────────────────────────────────────────────
@@ -201,8 +221,14 @@ def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
 
 GLOBAL_CACHE = {
     "df": pd.DataFrame(),
-    "last_updated": None
+    "last_updated": None,
 }
+
+# Keyed by (date_from, date_to, real_failures, cache_timestamp); cleared on every successful DB refresh.
+_STATS_CACHE: dict = {}
+
+# Populated by compute_anomalies() after each successful DB refresh.
+_ANOMALY_CACHE: dict = {"alerts": [], "computed_at": None}
 
 def connect():
     conn_str = (
@@ -230,56 +256,86 @@ def prepare_dataframe(df):
     return df
 
 def load_historical_data():
-    """Carga 1 año de datos desde la BD al arrancar el servidor."""
-    print(" [DATABASE] Iniciando carga de datos historicos (ultimo año)...")
+    """Load the last HISTORICAL_LOAD_DAYS of data into the in-memory cache at startup."""
+    logger.info("Loading historical data (last %d days)...", HISTORICAL_LOAD_DAYS)
     start_date = (datetime.now() - timedelta(days=HISTORICAL_LOAD_DAYS)).strftime("%Y-%m-%d")
-    conn = connect()
-    
     query = SQL + f" AND e.endtime >= '{start_date}'"
-    df = pd.read_sql(query, conn)
-    conn.close()
-    
-    df = prepare_dataframe(df)
-        
-    GLOBAL_CACHE["df"] = df
-    GLOBAL_CACHE["last_updated"] = datetime.now()
-    print(f" [DATABASE] Carga inicial completa. {len(df)} registros alojados en Memoria RAM.")
-
-def background_update_worker():
-    """
-    Hilo en segundo plano: Cada 15 min solo pide a la base de datos 
-    los ultimos 2 dias y los inyecta a la memoria global.
-    """
-    while True:
-        time.sleep(REFRESH_INTERVAL_MINUTES * 60)
+    delay = DB_RETRY_BASE_DELAY_SECONDS
+    for attempt in range(DB_RETRY_ATTEMPTS):
         try:
-            print("[BACKGROUND] Refrescando registros recientes de DB...")
-            cutoff_dt = datetime.now() - timedelta(days=RECENT_REFRESH_DAYS)
+            conn = connect()
+            df = pd.read_sql(query, conn)
+            conn.close()
+            df = prepare_dataframe(df)
+            GLOBAL_CACHE["df"] = df
+            GLOBAL_CACHE["last_updated"] = datetime.now()
+            logger.info("Initial load complete: %d records in memory.", len(df))
+            _refresh_anomalies(df, "startup")
+            return
+        except Exception as exc:
+            logger.error(
+                "Historical load failed (attempt %d/%d): %s",
+                attempt + 1, DB_RETRY_ATTEMPTS, exc,
+            )
+            if attempt < DB_RETRY_ATTEMPTS - 1:
+                logger.info("Retrying in %ds...", delay)
+                time.sleep(delay)
+                delay = min(delay * 2, 300)
+    logger.critical(
+        "All %d historical load attempts failed. Server will start with an empty cache.",
+        DB_RETRY_ATTEMPTS,
+    )
+
+def _run_background_update():
+    """Execute one DB refresh cycle with exponential-backoff retries."""
+    delay = DB_RETRY_BASE_DELAY_SECONDS
+    for attempt in range(DB_RETRY_ATTEMPTS):
+        try:
+            logger.info("[BACKGROUND] Refreshing recent records from DB (attempt %d/%d)...",
+                        attempt + 1, DB_RETRY_ATTEMPTS)
+            cutoff_dt  = datetime.now() - timedelta(days=RECENT_REFRESH_DAYS)
             cutoff_str = cutoff_dt.strftime("%Y-%m-%d")
-            cutoff_ts  = pd.to_datetime(cutoff_str)   # medianoche, sin hora
-            
+            cutoff_ts  = pd.to_datetime(cutoff_str)
+
             conn = connect()
             query = SQL + f" AND e.endtime >= '{cutoff_str}'"
             df_recent = pd.read_sql(query, conn)
             conn.close()
-            
-            df_recent = prepare_dataframe(df_recent)
-                
+
+            df_recent  = prepare_dataframe(df_recent)
             current_df = GLOBAL_CACHE["df"]
-            
-            # Borrar los datos viejos de los ultimos 2 dias del historico
-            # Usar cutoff_ts (medianoche) para que coincida con el filtro SQL
-            old_data = current_df[current_df['endtime'] < cutoff_ts]
-            
-            # Unir los datos recien consultados
-            new_df = pd.concat([old_data, df_recent], ignore_index=True)
-            
-            GLOBAL_CACHE["df"] = new_df
+            old_data   = current_df[current_df["endtime"] < cutoff_ts]
+            new_df     = pd.concat([old_data, df_recent], ignore_index=True)
+
+            GLOBAL_CACHE["df"]          = new_df
             GLOBAL_CACHE["last_updated"] = datetime.now()
-            print(f"✅ [BACKGROUND] Tabla en RAM Actualizada. Total registros: {len(new_df)}")
-            
-        except Exception as e:
-            print(f"❌ [BACKGROUND] Error en hilo de actualizacion: {str(e)}")
+            _STATS_CACHE.clear()
+            logger.info("[BACKGROUND] Cache updated: %d total records.", len(new_df))
+            _refresh_anomalies(new_df, "background")
+            return
+        except Exception as exc:
+            logger.error(
+                "[BACKGROUND] Update failed (attempt %d/%d): %s",
+                attempt + 1, DB_RETRY_ATTEMPTS, exc,
+            )
+            if attempt < DB_RETRY_ATTEMPTS - 1:
+                logger.info("[BACKGROUND] Retrying in %ds...", delay)
+                time.sleep(delay)
+                delay = min(delay * 2, 300)
+
+    last_updated = GLOBAL_CACHE.get("last_updated")
+    if last_updated:
+        stale_mins = (datetime.now() - last_updated).total_seconds() / 60
+        logger.warning(
+            "[BACKGROUND] All retries exhausted — data is %.0f minutes stale.", stale_mins
+        )
+
+
+def background_update_worker():
+    """Background thread: refresh the last RECENT_REFRESH_DAYS of data every REFRESH_INTERVAL_MINUTES."""
+    while True:
+        time.sleep(REFRESH_INTERVAL_MINUTES * 60)
+        _run_background_update()
 
 
 def filter_real_failures(df):
@@ -357,6 +413,158 @@ def compute_stats(df, date_from, date_to):
         "groups":     GROUP_NAMES,
         "lastUpdated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+
+def compute_stats_cached(df, date_from: str, date_to: str, real_failures: bool):
+    """Return compute_stats() result, reusing the cached value when the cache is still valid."""
+    cache_ts = GLOBAL_CACHE.get("last_updated")
+    key = (date_from, date_to, real_failures, cache_ts)
+    if key in _STATS_CACHE:
+        return _STATS_CACHE[key]
+    result = compute_stats(df, date_from, date_to)
+    _STATS_CACHE[key] = result
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# ANOMALY DETECTION
+# ─────────────────────────────────────────────────────────────
+
+def compute_anomalies(df: pd.DataFrame) -> list:
+    """
+    Scan every station for two signal types over the past 24 h:
+
+    1. Sudden drop  — hourly FPY falls below (7-day rolling mean − 2σ).
+                      scipy.stats.norm.sf gives the one-sided probability so
+                      operators can see how improbable the reading is.
+
+    2. Degradation streak — 3+ consecutive hours of monotonically declining FPY,
+                            regardless of absolute level.
+
+    Returns a list of alert dicts sorted critical-first then by station name.
+    """
+    if df.empty:
+        return []
+
+    now        = datetime.now()
+    cutoff_7d  = now - timedelta(days=ANOMALY_LOOKBACK_DAYS)
+    cutoff_24h = now - timedelta(hours=24)
+
+    df_week = df[df["endtime"] >= cutoff_7d].copy()
+    if df_week.empty:
+        return []
+
+    df_week["hour_bucket"] = df_week["endtime"].dt.floor("h")
+
+    alerts = []
+
+    for (sid, sname, prod), sdf in df_week.groupby(
+        ["stationid", "stationName", "producto"]
+    ):
+        # Hourly FPY series for the full 7-day window
+        hourly = (
+            sdf.groupby("hour_bucket")
+            .agg(
+                total  =("resultado", "count"),
+                passed =("resultado", lambda x: (x == "PASSED").sum()),
+            )
+            .sort_index()
+        )
+        hourly["fpy"] = hourly["passed"] / hourly["total"] * 100
+
+        if len(hourly) < ANOMALY_MIN_SAMPLES:
+            continue
+
+        # Rolling baseline (up to 168 h; requires ANOMALY_MIN_SAMPLES to activate)
+        roll           = hourly["fpy"].rolling(168, min_periods=ANOMALY_MIN_SAMPLES)
+        hourly["mean"] = roll.mean()
+        hourly["std"]  = roll.std()
+
+        recent = hourly[hourly.index >= pd.Timestamp(cutoff_24h)]
+        if recent.empty:
+            continue
+
+        # ── 1. Sudden-drop detection ───────────────────────────
+        drop_alerts = []
+        for ts, row in recent.iterrows():
+            mean, std = row["mean"], row["std"]
+            if pd.isna(mean) or pd.isna(std) or std < 0.5:
+                continue  # no stable baseline yet
+            threshold = mean - ANOMALY_ZSCORE_THRESHOLD * std
+            if row["fpy"] < threshold:
+                z     = (mean - row["fpy"]) / std
+                p_val = float(scipy_stats.norm.sf(z))
+                drop_alerts.append({
+                    "hour":      ts.strftime("%H:%M"),
+                    "fpy":       round(float(row["fpy"]), 1),
+                    "threshold": round(float(threshold), 1),
+                    "mean":      round(float(mean), 1),
+                    "sigma":     round(float(std), 1),
+                    "z_score":   round(float(z), 2),
+                    "p_value":   round(p_val, 4),
+                })
+
+        # ── 2. Consecutive degradation streak ─────────────────
+        streak_alert = None
+        fpy_vals = recent["fpy"].values
+        ts_vals  = list(recent.index)
+
+        if len(fpy_vals) >= ANOMALY_STREAK_MIN_HOURS:
+            best_len = cur_len = 1
+            best_start = cur_start = 0
+
+            for i in range(1, len(fpy_vals)):
+                if fpy_vals[i] < fpy_vals[i - 1]:
+                    cur_len += 1
+                    if cur_len > best_len:
+                        best_len   = cur_len
+                        best_start = cur_start
+                else:
+                    cur_len   = 1
+                    cur_start = i
+
+            if best_len >= ANOMALY_STREAK_MIN_HOURS:
+                end_idx = best_start + best_len - 1
+                streak_alert = {
+                    "hours":     best_len,
+                    "from":      ts_vals[best_start].strftime("%H:%M"),
+                    "to":        ts_vals[end_idx].strftime("%H:%M"),
+                    "fpy_start": round(float(fpy_vals[best_start]), 1),
+                    "fpy_end":   round(float(fpy_vals[end_idx]), 1),
+                    "drop_pts":  round(float(fpy_vals[best_start]) - float(fpy_vals[end_idx]), 1),
+                }
+
+        if not drop_alerts and streak_alert is None:
+            continue
+
+        severity = (
+            "critical"
+            if len(drop_alerts) >= 2 or (streak_alert and streak_alert["hours"] >= 5)
+            else "warning"
+        )
+
+        alerts.append({
+            "station_id":   int(sid),
+            "station_name": sname,
+            "product":      prod,
+            "severity":     severity,
+            "drop_alerts":  drop_alerts,
+            "streak":       streak_alert,
+        })
+
+    alerts.sort(key=lambda a: (0 if a["severity"] == "critical" else 1, a["station_name"]))
+    return alerts
+
+
+def _refresh_anomalies(df: pd.DataFrame, context: str) -> None:
+    """Run compute_anomalies and store results; swallows exceptions so DB refresh always completes."""
+    try:
+        alerts = compute_anomalies(df)
+        _ANOMALY_CACHE["alerts"]      = alerts
+        _ANOMALY_CACHE["computed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logger.info("[ANOMALY:%s] Scan complete: %d alert(s).", context, len(alerts))
+    except Exception as exc:
+        logger.error("[ANOMALY:%s] Scan failed: %s", context, exc)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -676,7 +884,7 @@ def api_data():
         else:
             pass_fail_pie = None
         
-        stats = compute_stats(df_filtered, date_from_str, date_to_str)
+        stats = compute_stats_cached(df_filtered, date_from_str, date_to_str, real_failures)
         stats["realFailures"] = real_failures
         if pass_fail_pie:
             stats["passFailPie"] = pass_fail_pie
@@ -685,6 +893,15 @@ def api_data():
         return jsonify(stats)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/anomalies")
+def api_anomalies():
+    return jsonify({
+        "alerts":      _ANOMALY_CACHE["alerts"],
+        "count":       len(_ANOMALY_CACHE["alerts"]),
+        "computed_at": _ANOMALY_CACHE["computed_at"],
+    })
 
 
 if __name__ == "__main__":
@@ -696,6 +913,5 @@ if __name__ == "__main__":
     bg_thread.start()
     
     port = int(os.environ.get("PORT", DEFAULT_APP_PORT))
-    print(f"\n  Manufacturing Dashboard iniciado")
-    print(f"  Abre en tu navegador: http://localhost:{port}\n")
+    logger.info("Manufacturing Dashboard started — http://localhost:%d", port)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

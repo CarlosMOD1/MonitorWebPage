@@ -53,9 +53,10 @@ DB_RETRY_BASE_DELAY_SECONDS = 30
 ANOMALY_LOOKBACK_DAYS    = 7     # baseline window
 ANOMALY_ZSCORE_THRESHOLD = 2.0   # sigma below mean to flag a drop
 ANOMALY_MIN_SAMPLES      = 12    # minimum active hours needed to compute baseline
-ANOMALY_STREAK_MIN_HOURS = 3     # consecutive declining hours to flag a streak
-ANOMALY_WORK_HOUR_START  = 7     # ignore hours 00:00–06:59 (no production)
-ANOMALY_MIN_TESTS_PER_HOUR = 3  # ignore sparse hours (shift start, short breaks)
+ANOMALY_STREAK_MIN_HOURS    = 3  # consecutive declining hours to flag a streak
+ANOMALY_MAX_STREAK_GAP_HOURS = 2 # idle gap (h) that breaks a streak — hours further apart are not "consecutive"
+ANOMALY_WORK_HOUR_START     = 7  # ignore hours 00:00–06:59 (no production)
+ANOMALY_MIN_TESTS_PER_HOUR  = 5  # min tests in a bucket to be analysed (filters sparse/startup hours)
 
 GROUPS = {
     "SPSF":        [178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232],
@@ -524,7 +525,12 @@ def compute_anomalies(df: pd.DataFrame) -> list:
             best_start = cur_start = 0
 
             for i in range(1, len(fpy_vals)):
-                if fpy_vals[i] < fpy_vals[i - 1]:
+                gap_h = (ts_vals[i] - ts_vals[i - 1]).total_seconds() / 3600
+                # An idle gap larger than ANOMALY_MAX_STREAK_GAP_HOURS means the station
+                # stopped testing between these two hours — they are NOT consecutive
+                # production hours and must not form part of the same streak.
+                is_consecutive = gap_h <= ANOMALY_MAX_STREAK_GAP_HOURS
+                if is_consecutive and fpy_vals[i] < fpy_vals[i - 1]:
                     cur_len += 1
                     if cur_len > best_len:
                         best_len   = cur_len

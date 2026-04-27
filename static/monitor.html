@@ -362,20 +362,26 @@
         const dStr = document.getElementById('datePicker').value;
         const urlParams = new URLSearchParams(window.location.search);
         const product = urlParams.get('product') || 'all';
+        const stationid = urlParams.get('stationid') || '';
         
         // Actualizar título global para que el usuario sepa en qué producto está
         const pageTitle = document.querySelector('.hdr h1');
-        if (product !== 'all') {
-            pageTitle.innerHTML = `⏱️ Real-time FPY <span>Monitor</span> - <b>${product}</b>`;
-        } else {
-            pageTitle.innerHTML = `⏱️ Real-time FPY <span>Monitor</span> - <b>Todos los productos</b>`;
+        let titleHtml = `⏱️ Real-time FPY <span>Monitor</span> - <b>${product !== 'all' ? product : 'Todos los productos'}</b>`;
+        if (stationid && stationid !== 'all') {
+             titleHtml += ` <b>(Estación ${stationid})</b>`;
         }
+        pageTitle.innerHTML = titleHtml;
         
         const overlay = document.getElementById('loadingOverlay');
         overlay.classList.remove('hidden');
         
         try {
-            const res = await fetch(`/api/monitor_data?date=${dStr}&product=${product}`);
+            let apiTarget = `/api/monitor_data?date=${dStr}&product=${encodeURIComponent(product)}`;
+            if (stationid) {
+                apiTarget += `&stationid=${encodeURIComponent(stationid)}`;
+            }
+            
+            const res = await fetch(apiTarget);
             const json = await res.json();
             
             if (json.error) {

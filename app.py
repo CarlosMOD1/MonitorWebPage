@@ -51,12 +51,12 @@ DB_RETRY_BASE_DELAY_SECONDS = 30
 
 # Anomaly detection
 ANOMALY_LOOKBACK_DAYS    = 7     # baseline window
-ANOMALY_ZSCORE_THRESHOLD = 2.0   # sigma below mean to flag a drop
+ANOMALY_ZSCORE_THRESHOLD = 3.0   # sigma below mean to flag a drop (increased from 2.0 to avoid false positives)
 ANOMALY_MIN_SAMPLES      = 12    # minimum active hours needed to compute baseline
-ANOMALY_STREAK_MIN_HOURS    = 3  # consecutive declining hours to flag a streak
+ANOMALY_STREAK_MIN_HOURS    = 4  # consecutive declining hours to flag a streak (increased from 3)
 ANOMALY_MAX_STREAK_GAP_HOURS = 2 # idle gap (h) that breaks a streak — hours further apart are not "consecutive"
 ANOMALY_WORK_HOUR_START     = 7  # ignore hours 00:00–06:59 (no production)
-ANOMALY_MIN_TESTS_PER_HOUR  = 5  # min tests in a bucket to be analysed (filters sparse/startup hours)
+ANOMALY_MIN_TESTS_PER_HOUR  = 10  # min tests in a bucket to be analysed (filters sparse/startup hours)
 
 GROUPS = {
     "SPSF":        [178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232],
@@ -369,7 +369,7 @@ def compute_stats(df, date_from, date_to):
         t  = len(d)
         p  = (d["resultado"] == "PASSED").sum()
         f  = (d["resultado"] == "FAILED").sum()
-        fp = d["failureCode"].str.contains(r".*-PASS-.*", na=False).sum()
+        fp = d["failureCode"].str.contains(r"ALL-PASS|.*-PASS-.*|MAXPASSEXCEEDED", na=False, case=False).sum()
         return {
             "total":  int(t),
             "failed": int(f),
@@ -452,6 +452,7 @@ def compute_anomalies(df: pd.DataFrame) -> list:
     now        = datetime.now()
     cutoff_7d  = now - timedelta(days=ANOMALY_LOOKBACK_DAYS)
     cutoff_24h = now - timedelta(hours=24)
+    cutoff_4h  = now - timedelta(hours=4)
 
     df_week = df[df["endtime"] >= cutoff_7d].copy()
     if df_week.empty:
@@ -499,21 +500,27 @@ def compute_anomalies(df: pd.DataFrame) -> list:
         drop_alerts = []
         for ts, row in recent.iterrows():
             mean, std = row["mean"], row["std"]
-            if pd.isna(mean) or pd.isna(std) or std < 0.5:
-                continue  # no stable baseline yet
-            threshold = mean - ANOMALY_ZSCORE_THRESHOLD * std
+            if pd.isna(mean) or pd.isna(std):
+                continue  # no baseline yet
+            
+            # Si una estación es siempre perfecta (100%), std puede ser 0 o casi 0.
+            # Imponemos un std artificial mínimo de 1.0 para permitir que saltos graves generen alertas.
+            eff_std = max(std, 1.0)
+            threshold = mean - ANOMALY_ZSCORE_THRESHOLD * eff_std
             if row["fpy"] < threshold:
-                z     = (mean - row["fpy"]) / std
-                p_val = float(scipy_stats.norm.sf(z))
-                drop_alerts.append({
-                    "hour":      ts.strftime("%H:%M"),
-                    "fpy":       round(float(row["fpy"]), 1),
-                    "threshold": round(float(threshold), 1),
-                    "mean":      round(float(mean), 1),
-                    "sigma":     round(float(std), 1),
-                    "z_score":   round(float(z), 2),
-                    "p_value":   round(p_val, 4),
-                })
+                # Solo alertar si la caída sucedió en las últimas 4 horas
+                if ts >= pd.Timestamp(cutoff_4h):
+                    z     = (mean - row["fpy"]) / eff_std
+                    p_val = float(scipy_stats.norm.sf(z))
+                    drop_alerts.append({
+                        "hour":      ts.strftime("%H:%M"),
+                        "fpy":       round(float(row["fpy"]), 1),
+                        "threshold": round(float(threshold), 1),
+                        "mean":      round(float(mean), 1),
+                        "sigma":     round(float(std), 1),
+                        "z_score":   round(float(z), 2),
+                        "p_value":   round(p_val, 4),
+                    })
 
         # ── 2. Consecutive degradation streak ─────────────────
         streak_alert = None
@@ -541,14 +548,17 @@ def compute_anomalies(df: pd.DataFrame) -> list:
 
             if best_len >= ANOMALY_STREAK_MIN_HOURS:
                 end_idx = best_start + best_len - 1
-                streak_alert = {
-                    "hours":     best_len,
-                    "from":      ts_vals[best_start].strftime("%H:%M"),
-                    "to":        ts_vals[end_idx].strftime("%H:%M"),
-                    "fpy_start": round(float(fpy_vals[best_start]), 1),
-                    "fpy_end":   round(float(fpy_vals[end_idx]), 1),
-                    "drop_pts":  round(float(fpy_vals[best_start]) - float(fpy_vals[end_idx]), 1),
-                }
+                drop_amt = round(float(fpy_vals[best_start]) - float(fpy_vals[end_idx]), 1)
+                # Solo alertar si la racha terminó en las últimas 4 horas y la caída es >= 5%
+                if drop_amt >= 5.0 and ts_vals[end_idx] >= pd.Timestamp(cutoff_4h):
+                    streak_alert = {
+                        "hours":     best_len,
+                        "from":      ts_vals[best_start].strftime("%H:%M"),
+                        "to":        ts_vals[end_idx].strftime("%H:%M"),
+                        "fpy_start": round(float(fpy_vals[best_start]), 1),
+                        "fpy_end":   round(float(fpy_vals[end_idx]), 1),
+                        "drop_pts":  drop_amt,
+                    }
 
         if not drop_alerts and streak_alert is None:
             continue
@@ -598,6 +608,7 @@ def monitor_page():
 def api_monitor_data():
     target_date_str = request.args.get("date", datetime.now().strftime("%Y-%m-%d"))
     product_filter = request.args.get("product", "all")
+    station_filter = request.args.get("stationid", "all")
     
     try:
         df = GLOBAL_CACHE["df"]
@@ -613,6 +624,13 @@ def api_monitor_data():
         if product_filter != "all" and product_filter in GROUPS:
             group_ids = GROUPS[product_filter]
             df_day = df_day[df_day['stationid'].isin(group_ids)]
+            
+        # Filter by station if specified
+        if station_filter != "all":
+            try:
+                df_day = df_day[df_day['stationid'] == int(station_filter)]
+            except ValueError:
+                pass
         
         if df_day.empty:
             return jsonify({"date": target_date_str, "product": product_filter, "data": {}})
@@ -784,6 +802,7 @@ def api_passfail_details():
     product       = request.args.get("product", "all")
     resultado     = request.args.get("resultado", "")  # PASSED o FAILED
     real_failures = request.args.get("real_failures", "false").lower() == "true"
+    station_id_str = request.args.get("stationid", "all")
 
     try:
         df = GLOBAL_CACHE["df"]
@@ -798,6 +817,13 @@ def api_passfail_details():
 
         if product != "all":
             sub = sub[sub["producto"] == product]
+
+        if station_id_str != "all":
+            try:
+                station_id = int(station_id_str)
+                sub = sub[sub["stationid"] == station_id]
+            except ValueError:
+                return jsonify({"error": "stationid invalido"}), 400
 
         if sub.empty:
             return jsonify([])

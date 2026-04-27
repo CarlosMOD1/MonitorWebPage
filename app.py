@@ -702,6 +702,133 @@ def _maybe_refresh_forecast(df: pd.DataFrame) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# RTY (ROLLED THROUGHPUT YIELD)
+# ─────────────────────────────────────────────────────────────
+
+RTY_MIN_UNITS_PER_STATION = 5  # skip stations with fewer first-attempt units in the period
+
+def _infer_station_sequence(sdf: pd.DataFrame) -> list:
+    """
+    Infer the typical station visit order for a product by computing the median
+    arrival rank of each station across all unit journeys (prevQr paths).
+    Returns a list of (stationid, stationName) tuples in ascending process order.
+    """
+    if sdf.empty:
+        return []
+    first = (
+        sdf.sort_values("endtime")
+           .groupby(["prevQr", "stationid", "stationName"], sort=False)["endtime"]
+           .first()
+           .reset_index()
+    )
+    first["rank"] = first.groupby("prevQr")["endtime"].rank(method="first")
+
+    # Only include stations seen on ≥10 unique units so median is stable
+    counts = first.groupby("stationid")["prevQr"].nunique()
+    valid  = counts[counts >= 10].index
+    first  = first[first["stationid"].isin(valid)]
+    if first.empty:
+        return []
+
+    med = (
+        first.groupby(["stationid", "stationName"])["rank"]
+             .median()
+             .reset_index()
+             .sort_values("rank")
+    )
+    return list(zip(med["stationid"].astype(int), med["stationName"]))
+
+
+def _compute_rty_trend(sdf: pd.DataFrame) -> list:
+    """Compute daily RTY from a pre-filtered station DataFrame."""
+    if sdf.empty:
+        return []
+    sdf = sdf.copy()
+    sdf["date"] = sdf["endtime"].dt.date
+    trend = []
+
+    for date, day_df in sdf.groupby("date"):
+        first = (
+            day_df.sort_values("endtime")
+                  .groupby(["prevQr", "stationid"], sort=False)
+                  .agg(resultado=("resultado", "first"))
+                  .reset_index()
+        )
+        fpys = []
+        for _sid, grp in first.groupby("stationid"):
+            total = len(grp)
+            if total < 3:
+                continue
+            fpys.append((grp["resultado"] == "PASSED").sum() / total)
+
+        if fpys:
+            daily_rty = 1.0
+            for f in fpys:
+                daily_rty *= f
+            trend.append({"date": str(date), "rty": round(daily_rty * 100, 1)})
+
+    return sorted(trend, key=lambda x: x["date"])
+
+
+def compute_rty(df: pd.DataFrame, product: str, date_from: str, date_to: str) -> dict:
+    """Compute RTY and per-station first-pass FPY for one product group."""
+    ids = set(GROUPS.get(product, []))
+    if not ids:
+        return {"rty": 0.0, "stations": [], "sequence": [], "trend": [], "units": 0}
+
+    dt_from = pd.to_datetime(date_from)
+    dt_to   = pd.to_datetime(date_to) + timedelta(days=1)
+    mask    = (df["endtime"] >= dt_from) & (df["endtime"] < dt_to) & df["stationid"].isin(ids)
+    sdf     = df[mask].copy()
+
+    if sdf.empty:
+        return {"rty": 0.0, "stations": [], "sequence": [], "trend": [], "units": 0}
+
+    # First attempt per (unit, station) — sort ensures chronological first
+    first = (
+        sdf.sort_values("endtime")
+           .groupby(["prevQr", "stationid", "stationName"], sort=False)
+           .agg(resultado=("resultado", "first"))
+           .reset_index()
+    )
+
+    station_fpys = []
+    for (sid, sname), grp in first.groupby(["stationid", "stationName"]):
+        total = len(grp)
+        if total < RTY_MIN_UNITS_PER_STATION:
+            continue
+        passed = int((grp["resultado"] == "PASSED").sum())
+        fpy    = passed / total * 100
+        station_fpys.append({
+            "station_id":   int(sid),
+            "station_name": sname,
+            "fpy_first":    round(fpy, 1),
+            "total":        total,
+            "passed":       passed,
+            "rty_loss":     round(100 - fpy, 1),
+        })
+
+    if not station_fpys:
+        return {"rty": 0.0, "stations": [], "sequence": [], "trend": [], "units": 0}
+
+    rty = 1.0
+    for s in station_fpys:
+        rty *= s["fpy_first"] / 100
+    rty = round(rty * 100, 1)
+
+    # Sort by RTY loss — biggest problem stations first
+    station_fpys.sort(key=lambda s: s["rty_loss"], reverse=True)
+
+    return {
+        "rty":      rty,
+        "stations": station_fpys,
+        "sequence": [[s[0], s[1]] for s in _infer_station_sequence(sdf)],
+        "trend":    _compute_rty_trend(sdf),
+        "units":    int(first["prevQr"].nunique()),
+    }
+
+
+# ─────────────────────────────────────────────────────────────
 # RUTAS
 # ─────────────────────────────────────────────────────────────
 @app.route("/")
@@ -1104,6 +1231,50 @@ def api_forecast():
         "generated_at":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "stations":      result,
     })
+
+
+@app.route("/rty")
+def rty_page():
+    return send_from_directory("static", "rty.html")
+
+
+@app.route("/api/rty")
+def api_rty():
+    """RTY (Rolled Throughput Yield) per product group with per-station first-pass FPY breakdown."""
+    date_from = request.args.get("from", (datetime.now() - timedelta(days=DEFAULT_QUERY_RANGE_DAYS)).strftime("%Y-%m-%d"))
+    date_to   = request.args.get("to",   datetime.now().strftime("%Y-%m-%d"))
+    product   = request.args.get("product", "all")
+
+    df = GLOBAL_CACHE["df"]
+    if df.empty:
+        return jsonify({"error": "System is booting"}), 503
+
+    if product == "all":
+        summary = []
+        for prod in GROUP_NAMES:
+            r = compute_rty(df, prod, date_from, date_to)
+            summary.append({
+                "product": prod,
+                "rty":     r["rty"],
+                "units":   r["units"],
+                "stations_count": len(r["stations"]),
+            })
+        summary.sort(key=lambda x: x["rty"])   # worst first
+        return jsonify({
+            "product":   "all",
+            "date_from": date_from,
+            "date_to":   date_to,
+            "summary":   summary,
+        })
+
+    if product not in GROUPS:
+        return jsonify({"error": f"Unknown product: {product}"}), 400
+
+    result = compute_rty(df, product, date_from, date_to)
+    result["product"]   = product
+    result["date_from"] = date_from
+    result["date_to"]   = date_to
+    return jsonify(result)
 
 
 if __name__ == "__main__":

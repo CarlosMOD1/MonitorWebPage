@@ -236,7 +236,8 @@ tbody tr:hover td{background:#1E3A5F}
         <div class="period" id="periodLabel"></div>
       </div>
       <div class="date-range">
-        <button class="btn-refresh" style="background:#8B9BAA;margin-right:10px;" onclick="openMonitor()">Monitor</button>
+        <button class="btn-refresh" style="background:#8B9BAA;margin-right:4px;" onclick="openMonitor()">Monitor</button>
+        <button class="btn-refresh" style="background:#27AE60;margin-right:10px;" onclick="openRty()">RTY</button>
         <button class="btn-real" id="btnReal" onclick="toggleRealFailures()">&#9888; Fallas Reales</button>
         <label>From</label>
         <input type="date" id="dateFrom">
@@ -398,6 +399,13 @@ function openMonitor() {
   const toDate = document.getElementById('dateTo').value || new Date().toISOString().slice(0,10);
   const stFilter = (activeStation !== 'all' && activeStation != null) ? `&stationid=${encodeURIComponent(activeStation)}` : '';
   window.location.href = `/monitor?product=${encodeURIComponent(activeProduct)}&date=${toDate}${stFilter}`;
+}
+
+function openRty() {
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  const prod = activeProduct !== 'all' ? `&product=${encodeURIComponent(activeProduct)}` : '';
+  window.location.href = `/rty?from=${from}&to=${to}${prod}`;
 }
 
 // ── UI helpers ──────────────────────────────────────

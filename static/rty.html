@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RTY Dashboard</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #0F1923; color: #F4F6F8; min-height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Header */
+.hdr { padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(135deg,#0F1923,#1A2B3C); border-bottom: 2px solid #1E6FBA; flex-shrink: 0; gap: 12px; }
+.hdr-left { display: flex; align-items: center; gap: 14px; }
+.hdr h1 { font-size: 17px; font-weight: 700; }
+.hdr h1 span { color: #F1C40F; }
+.btn-back { display: inline-flex; align-items: center; text-decoration: none; color: #8B9BAA; font-size: 11px; font-weight: 700; background: #1A2B3C; padding: 5px 12px; border-radius: 6px; border: 1px solid #2C3E50; }
+.btn-back:hover { background: #1E3A5F; color: #fff; }
+.date-range { display: flex; gap: 6px; align-items: center; }
+.date-range label { font-size: 10px; color: #8B9BAA; }
+.date-range input { background: #1A2B3C; border: 1px solid #2C3E50; color: #F4F6F8; padding: 3px 8px; border-radius: 6px; font-size: 10px; font-family: inherit; }
+.btn-filter { background: #1E6FBA; color: #fff; border: none; padding: 4px 12px; border-radius: 6px; font-size: 10px; font-weight: 700; cursor: pointer; }
+.btn-filter:hover { background: #2E9CDB; }
+
+/* Product tabs */
+.tabs { display: flex; gap: 5px; padding: 7px 16px; background: #0A1420; border-bottom: 1px solid #1A2B3C; flex-wrap: wrap; flex-shrink: 0; }
+.tab { padding: 4px 13px; border-radius: 12px; cursor: pointer; background: #1A2B3C; color: #8B9BAA; font-size: 10px; font-weight: 700; border: 1px solid #2C3E50; transition: all .15s; white-space: nowrap; }
+.tab:hover { background: #1E3A5F; color: #F4F6F8; }
+.tab.active { background: #1E6FBA; color: #fff; border-color: #1E6FBA; }
+
+/* Main layout */
+.main { display: flex; gap: 10px; padding: 10px 14px; flex: 1; overflow: hidden; }
+
+/* Left panel: RTY number + sparkline */
+.left-panel { width: 300px; min-width: 260px; display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; }
+
+.rty-card { background: #1A2B3C; border-radius: 10px; padding: 22px 18px; text-align: center; }
+.rty-number { font-size: 68px; font-weight: 700; line-height: 1; transition: color .3s; }
+.rty-label { font-size: 10px; font-weight: 700; color: #8B9BAA; letter-spacing: 1.5px; margin-top: 8px; text-transform: uppercase; }
+.rty-meta { font-size: 10px; color: #5A6A7A; margin-top: 8px; line-height: 1.7; }
+.rty-meta strong { color: #8B9BAA; }
+.rty-formula { font-size: 9px; color: #2C3E50; margin-top: 10px; font-family: monospace; background: #0F1923; padding: 6px 8px; border-radius: 5px; line-height: 1.5; text-align: left; }
+
+.trend-card { background: #1A2B3C; border-radius: 10px; padding: 12px 14px; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.card-title { font-size: 9px; font-weight: 700; color: #2E9CDB; letter-spacing: 1px; margin-bottom: 8px; text-transform: uppercase; }
+.trend-svg-wrap { flex: 1; min-height: 0; }
+
+/* Right panel: station breakdown */
+.right-panel { flex: 1; background: #1A2B3C; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; overflow: hidden; }
+.panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-shrink: 0; }
+.panel-legend { display: flex; gap: 12px; font-size: 9px; color: #5A6A7A; }
+.legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
+.station-list { flex: 1; overflow-y: auto; }
+
+/* Station row */
+.st-row { display: grid; grid-template-columns: 28px 1fr 52px 52px 58px; gap: 8px; align-items: center; padding: 7px 6px; border-radius: 6px; margin-bottom: 5px; background: #0F1923; }
+.st-row:hover { background: #111D2B; }
+.st-seq { font-size: 9px; color: #2C3E50; font-weight: 700; text-align: center; }
+.st-bar-col { display: flex; flex-direction: column; gap: 3px; }
+.st-name { font-size: 10px; color: #C8D6E2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-track { height: 8px; background: #1A2B3C; border-radius: 4px; overflow: hidden; }
+.st-fill { height: 100%; border-radius: 4px; transition: width .5s; }
+.st-fpy { font-size: 12px; font-weight: 700; text-align: right; }
+.st-loss { font-size: 10px; color: #E74C3C; text-align: right; }
+.st-units { font-size: 9px; color: #5A6A7A; text-align: right; }
+
+/* Overview grid (all products) */
+.overview-grid { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px; overflow-y: auto; }
+.ov-card { background: #0F1923; border-radius: 10px; padding: 16px; min-width: 160px; flex: 1; text-align: center; cursor: pointer; border: 1px solid #1A2B3C; transition: border-color .2s; }
+.ov-card:hover { border-color: #2E9CDB; }
+.ov-rty { font-size: 36px; font-weight: 700; line-height: 1; }
+.ov-name { font-size: 10px; color: #8B9BAA; font-weight: 700; letter-spacing: .8px; margin-top: 6px; }
+.ov-units { font-size: 9px; color: #5A6A7A; margin-top: 4px; }
+.ov-bar { height: 3px; border-radius: 2px; margin-top: 10px; transition: width .4s; }
+
+/* Loading overlay */
+.loading-overlay { position: fixed; inset: 0; background: rgba(15,25,35,.85); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; gap: 14px; }
+.loading-overlay.hidden { display: none; }
+.spinner { width: 40px; height: 40px; border: 4px solid #1A2B3C; border-top: 4px solid #2E9CDB; border-radius: 50%; animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* No data */
+.no-data { padding: 40px; text-align: center; color: #5A6A7A; font-size: 12px; }
+
+/* Status bar */
+.status-bar { background: #0A1420; border-top: 1px solid #1A2B3C; padding: 3px 16px; font-size: 9px; color: #2C3E50; flex-shrink: 0; display: flex; gap: 16px; }
+.status-bar .ok { color: #00D4AA; }
+.status-bar .err { color: #E74C3C; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0A1420; }
+::-webkit-scrollbar-thumb { background: #2C3E50; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <div style="font-size:12px;color:#8B9BAA">Calculando RTY...</div>
+</div>
+
+<!-- Header -->
+<div class="hdr">
+  <div class="hdr-left">
+    <a href="/" class="btn-back">&#8592; Dashboard</a>
+    <h1>&#9654; Rolled Throughput <span>Yield</span></h1>
+  </div>
+  <div class="date-range">
+    <label>From</label>
+    <input type="date" id="dateFrom">
+    <label>To</label>
+    <input type="date" id="dateTo">
+    <button class="btn-filter" onclick="applyFilter()">&#128260; Filter</button>
+  </div>
+</div>
+
+<!-- Product tabs -->
+<div class="tabs" id="tabsRow"></div>
+
+<!-- Main -->
+<div class="main" id="mainArea">
+  <!-- filled by JS -->
+</div>
+
+<!-- Status bar -->
+<div class="status-bar">
+  <span id="statusMsg">—</span>
+</div>
+
+<script>
+const GROUP_NAMES = [];   // populated from API summary
+
+let activeProduct = 'all';
+let rtyData       = null;
+
+// ── Colors ───────────────────────────────────────────────────
+function yieldColor(v) {
+  return v >= 95 ? '#00D4AA' : v >= 85 ? '#F1C40F' : '#E74C3C';
+}
+function fmt(n) { return (n ?? 0).toLocaleString('en-US'); }
+
+// ── Default dates ────────────────────────────────────────────
+(function initDates() {
+  const today = new Date();
+  const from  = new Date(today);
+  from.setDate(today.getDate() - 30);
+  const iso   = d => d.toISOString().slice(0, 10);
+  const p     = new URLSearchParams(window.location.search);
+  document.getElementById('dateFrom').value = p.get('from') || iso(from);
+  document.getElementById('dateTo').value   = p.get('to')   || iso(today);
+  if (p.get('product')) activeProduct = p.get('product');
+})();
+
+// ── Tabs ─────────────────────────────────────────────────────
+function renderTabs(groups) {
+  const cont = document.getElementById('tabsRow');
+  let html = `<div class="tab ${activeProduct === 'all' ? 'active' : ''}" onclick="selectProduct('all')">Resumen</div>`;
+  groups.forEach(g => {
+    html += `<div class="tab ${activeProduct === g ? 'active' : ''}" onclick="selectProduct('${g}')">${g}</div>`;
+  });
+  cont.innerHTML = html;
+}
+
+function selectProduct(prod) {
+  activeProduct = prod;
+  load();
+}
+
+// ── Load data ────────────────────────────────────────────────
+async function load() {
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  document.getElementById('loadingOverlay').classList.remove('hidden');
+  document.getElementById('statusMsg').textContent = '—';
+
+  try {
+    const url = `/api/rty?product=${encodeURIComponent(activeProduct)}&from=${from}&to=${to}`;
+    const res  = await fetch(url);
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      document.getElementById('statusMsg').className = 'err';
+      document.getElementById('statusMsg').textContent = data.error || 'Server error';
+      return;
+    }
+
+    rtyData = data;
+
+    // Populate GROUP_NAMES on first load
+    if (!GROUP_NAMES.length) {
+      if (data.summary) {
+        data.summary.forEach(s => { if (!GROUP_NAMES.includes(s.product)) GROUP_NAMES.push(s.product); });
+        // Sort alphabetically so tabs are stable
+        GROUP_NAMES.sort();
+      }
+    }
+
+    renderTabs(GROUP_NAMES);
+
+    if (activeProduct === 'all') {
+      renderOverview(data.summary || []);
+    } else {
+      renderDetail(data);
+    }
+
+    const range = `${from} → ${to}`;
+    document.getElementById('statusMsg').className = 'ok';
+    document.getElementById('statusMsg').textContent = range;
+
+  } catch (e) {
+    document.getElementById('statusMsg').className = 'err';
+    document.getElementById('statusMsg').textContent = 'Connection error: ' + e.message;
+  } finally {
+    document.getElementById('loadingOverlay').classList.add('hidden');
+  }
+}
+
+function applyFilter() { load(); }
+
+// ── Overview (all products) ──────────────────────────────────
+function renderOverview(summary) {
+  const main = document.getElementById('mainArea');
+  if (!summary.length) {
+    main.innerHTML = '<div class="no-data">Sin datos para el rango seleccionado.</div>';
+    return;
+  }
+  let html = '<div class="overview-grid">';
+  summary.forEach(s => {
+    const c = yieldColor(s.rty);
+    html += `<div class="ov-card" onclick="selectProduct('${s.product}')">
+      <div class="ov-rty" style="color:${c}">${s.rty > 0 ? s.rty.toFixed(1) + '%' : '—'}</div>
+      <div class="ov-name">${s.product}</div>
+      <div class="ov-units">${fmt(s.units)} unidades &middot; ${s.stations_count} estaciones</div>
+      <div class="ov-bar" style="background:${c};width:${s.rty}%"></div>
+    </div>`;
+  });
+  html += '</div>';
+  main.innerHTML = html;
+}
+
+// ── Detail view ──────────────────────────────────────────────
+function renderDetail(data) {
+  const main = document.getElementById('mainArea');
+
+  if (!data.stations || !data.stations.length) {
+    main.innerHTML = '<div class="no-data">Sin datos suficientes para calcular RTY en este período.</div>';
+    return;
+  }
+
+  // Build sequence-position map: stationId → position number (1-based)
+  const seqMap = {};
+  (data.sequence || []).forEach((pair, i) => { seqMap[pair[0]] = i + 1; });
+
+  const rty    = data.rty;
+  const rtyC   = yieldColor(rty);
+  const n      = data.stations.length;
+  const units  = fmt(data.units);
+  const from   = data.date_from || '';
+  const to     = data.date_to   || '';
+
+  // Formula snippet: FPY₁ × FPY₂ × … = RTY
+  const formulaParts = data.stations
+    .slice()
+    .sort((a, b) => (seqMap[a.station_id] || 99) - (seqMap[b.station_id] || 99))
+    .map(s => s.fpy_first.toFixed(1) + '%')
+    .join(' × ');
+  const formulaLine = formulaParts + (formulaParts ? ` = ${rty}%` : '');
+
+  main.innerHTML = `
+    <div class="left-panel">
+      <div class="rty-card">
+        <div class="rty-number" style="color:${rtyC}">${rty > 0 ? rty.toFixed(1) + '%' : '—'}</div>
+        <div class="rty-label">Rolled Throughput Yield</div>
+        <div class="rty-meta">
+          <strong>${n}</strong> estaciones &nbsp;·&nbsp; <strong>${units}</strong> unidades<br>
+          ${from} → ${to}
+        </div>
+        <div class="rty-formula">${formulaLine || '—'}</div>
+      </div>
+      <div class="trend-card">
+        <div class="card-title">Tendencia 30 días</div>
+        <div class="trend-svg-wrap" id="trendWrap"></div>
+      </div>
+    </div>
+
+    <div class="right-panel">
+      <div class="panel-header">
+        <div class="card-title">FPY First-Pass por Estación &mdash; ordenado por pérdida RTY</div>
+        <div class="panel-legend">
+          <span><span class="legend-dot" style="background:#00D4AA"></span>≥ 95%</span>
+          <span><span class="legend-dot" style="background:#F1C40F"></span>≥ 85%</span>
+          <span><span class="legend-dot" style="background:#E74C3C"></span>&lt; 85%</span>
+        </div>
+      </div>
+      <div class="station-list" id="stationList"></div>
+    </div>`;
+
+  renderStations(data.stations, seqMap);
+  drawTrend(data.trend || [], rty, rtyC);
+}
+
+// ── Station bar chart ────────────────────────────────────────
+function renderStations(stations, seqMap) {
+  const cont = document.getElementById('stationList');
+  if (!stations.length) {
+    cont.innerHTML = '<div class="no-data">Sin datos de estaciones.</div>';
+    return;
+  }
+
+  let html = `
+    <div class="st-row" style="background:transparent;margin-bottom:8px">
+      <div class="st-seq" style="color:#2E9CDB">#</div>
+      <div class="st-bar-col"><span style="font-size:9px;color:#2E9CDB;font-weight:700;letter-spacing:.8px">ESTACIÓN</span></div>
+      <div class="st-fpy" style="font-size:9px;color:#2E9CDB;font-weight:700">FPY</div>
+      <div class="st-loss" style="font-size:9px;color:#2E9CDB;font-weight:700">PÉRDIDA</div>
+      <div class="st-units" style="font-size:9px;color:#2E9CDB;font-weight:700">UNIDADES</div>
+    </div>`;
+
+  stations.forEach(s => {
+    const c   = yieldColor(s.fpy_first);
+    const seq = seqMap[s.station_id] ? `#${seqMap[s.station_id]}` : '—';
+    html += `
+      <div class="st-row">
+        <div class="st-seq">${seq}</div>
+        <div class="st-bar-col">
+          <div class="st-name" title="${s.station_name}">${s.station_name}</div>
+          <div class="st-track"><div class="st-fill" style="width:${s.fpy_first}%;background:${c}"></div></div>
+        </div>
+        <div class="st-fpy" style="color:${c}">${s.fpy_first.toFixed(1)}%</div>
+        <div class="st-loss">−${s.rty_loss.toFixed(1)}%</div>
+        <div class="st-units">${fmt(s.total)}</div>
+      </div>`;
+  });
+  cont.innerHTML = html;
+}
+
+// ── Trend sparkline (SVG) ────────────────────────────────────
+function drawTrend(trend, currentRty, rtyColor) {
+  const wrap = document.getElementById('trendWrap');
+  if (!wrap) return;
+
+  const W   = wrap.offsetWidth  || 260;
+  const H   = wrap.offsetHeight || 140;
+  const pL  = 36, pR = 10, pT = 10, pB = 26;
+
+  if (!trend.length) {
+    wrap.innerHTML = `<div class="no-data" style="padding:20px;font-size:11px">Sin datos de tendencia</div>`;
+    return;
+  }
+
+  const vals  = trend.map(p => p.rty);
+  const minV  = Math.max(0,   Math.min(...vals) - 4);
+  const maxV  = Math.min(100, Math.max(...vals) + 4);
+  const range = maxV - minV || 1;
+
+  const xS = i  => pL + (i / (trend.length - 1 || 1)) * (W - pL - pR);
+  const yS = v  => pT + (1 - (v - minV) / range) * (H - pT - pB);
+
+  const pts    = trend.map((p, i) => `${xS(i).toFixed(1)},${yS(p.rty).toFixed(1)}`).join(' ');
+  const firstX = xS(0).toFixed(1);
+  const lastX  = xS(trend.length - 1).toFixed(1);
+  const botY   = (H - pB).toFixed(1);
+  const areaPts = `${firstX},${botY} ${pts} ${lastX},${botY}`;
+
+  // Y ticks
+  const tVals = [minV, (minV + maxV) / 2, maxV];
+  const ticks = tVals.map(v => ({ v: v.toFixed(0) + '%', y: yS(v).toFixed(1) }));
+
+  // X labels: first, middle, last
+  const xIdxs  = [0, Math.floor((trend.length - 1) / 2), trend.length - 1];
+  const xLabels = xIdxs.map(i => ({ x: xS(i).toFixed(1), label: trend[i].date.slice(5) }));
+
+  // Reference line at current RTY
+  const refY = yS(currentRty).toFixed(1);
+
+  // Dots — only draw if ≤ 45 points to avoid clutter
+  const dots = trend.length <= 45
+    ? trend.map((p, i) => `<circle cx="${xS(i).toFixed(1)}" cy="${yS(p.rty).toFixed(1)}" r="2" fill="${rtyColor}" stroke="#1A2B3C" stroke-width="1"/>`)
+      .join('')
+    : '';
+
+  const svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block">
+    ${ticks.map(t => `<line x1="${pL}" y1="${t.y}" x2="${W - pR}" y2="${t.y}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>`).join('')}
+    ${ticks.map(t => `<text x="${pL - 4}" y="${(parseFloat(t.y) + 3.5).toFixed(1)}" text-anchor="end" font-size="8" fill="#5A6A7A" font-family="Segoe UI,Arial,sans-serif">${t.v}</text>`).join('')}
+    ${xLabels.map(l => `<text x="${l.x}" y="${H - 4}" text-anchor="middle" font-size="7.5" fill="#5A6A7A" font-family="Segoe UI,Arial,sans-serif">${l.label}</text>`).join('')}
+    <polygon points="${areaPts}" fill="${rtyColor}" opacity="0.08"/>
+    <line x1="${pL}" y1="${refY}" x2="${W - pR}" y2="${refY}" stroke="${rtyColor}" stroke-width="1" stroke-dasharray="3,3" opacity="0.45"/>
+    <polyline points="${pts}" fill="none" stroke="${rtyColor}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${dots}
+  </svg>`;
+  wrap.innerHTML = svg;
+}
+
+// ── Init ──────────────────────────────────────────────────────
+load();
+</script>
+</body>
+</html>

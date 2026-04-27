@@ -258,13 +258,9 @@ function renderDetail(data) {
   const from   = data.date_from || '';
   const to     = data.date_to   || '';
 
-  // Formula snippet: FPY₁ × FPY₂ × … = RTY
-  const formulaParts = data.stations
-    .slice()
-    .sort((a, b) => (seqMap[a.station_id] || 99) - (seqMap[b.station_id] || 99))
-    .map(s => s.fpy_first.toFixed(1) + '%')
-    .join(' × ');
-  const formulaLine = formulaParts + (formulaParts ? ` = ${rty}%` : '');
+  // Formula: zero-defect units / total units
+  const zd = data.zero_defect ?? 0;
+  const formulaLine = `${zd.toLocaleString('en-US')} sin defecto / ${fmt(data.units)} unidades = ${rty > 0 ? rty.toFixed(1) + '%' : '—'}`;
 
   main.innerHTML = `
     <div class="left-panel">

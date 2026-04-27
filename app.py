@@ -740,7 +740,7 @@ def _infer_station_sequence(sdf: pd.DataFrame) -> list:
 
 
 def _compute_rty_trend(sdf: pd.DataFrame) -> list:
-    """Compute daily RTY from a pre-filtered station DataFrame."""
+    """Compute daily unit-based RTY: % of units that passed every station on the first try."""
     if sdf.empty:
         return []
     sdf = sdf.copy()
@@ -754,18 +754,11 @@ def _compute_rty_trend(sdf: pd.DataFrame) -> list:
                   .agg(resultado=("resultado", "first"))
                   .reset_index()
         )
-        fpys = []
-        for _sid, grp in first.groupby("stationid"):
-            total = len(grp)
-            if total < 3:
-                continue
-            fpys.append((grp["resultado"] == "PASSED").sum() / total)
-
-        if fpys:
-            daily_rty = 1.0
-            for f in fpys:
-                daily_rty *= f
-            trend.append({"date": str(date), "rty": round(daily_rty * 100, 1)})
+        # A unit passes RTY only if ALL its first-attempt results were PASSED
+        unit_ok = first.groupby("prevQr")["resultado"].apply(lambda x: (x == "PASSED").all())
+        total   = len(unit_ok)
+        if total >= 3:
+            trend.append({"date": str(date), "rty": round(unit_ok.sum() / total * 100, 1)})
 
     return sorted(trend, key=lambda x: x["date"])
 
@@ -809,22 +802,24 @@ def compute_rty(df: pd.DataFrame, product: str, date_from: str, date_to: str) ->
         })
 
     if not station_fpys:
-        return {"rty": 0.0, "stations": [], "sequence": [], "trend": [], "units": 0}
+        return {"rty": 0.0, "stations": [], "sequence": [], "trend": [], "units": 0, "zero_defect": 0}
 
-    rty = 1.0
-    for s in station_fpys:
-        rty *= s["fpy_first"] / 100
-    rty = round(rty * 100, 1)
+    # Unit-based RTY: fraction of units that passed ALL stations on the first try
+    unit_ok     = first.groupby("prevQr")["resultado"].apply(lambda x: (x == "PASSED").all())
+    total_units = int(len(unit_ok))
+    zero_defect = int(unit_ok.sum())
+    rty         = round(zero_defect / total_units * 100, 1) if total_units else 0.0
 
     # Sort by RTY loss — biggest problem stations first
     station_fpys.sort(key=lambda s: s["rty_loss"], reverse=True)
 
     return {
-        "rty":      rty,
-        "stations": station_fpys,
-        "sequence": [[s[0], s[1]] for s in _infer_station_sequence(sdf)],
-        "trend":    _compute_rty_trend(sdf),
-        "units":    int(first["prevQr"].nunique()),
+        "rty":         rty,
+        "zero_defect": zero_defect,
+        "stations":    station_fpys,
+        "sequence":    [[s[0], s[1]] for s in _infer_station_sequence(sdf)],
+        "trend":       _compute_rty_trend(sdf),
+        "units":       total_units,
     }
 
 

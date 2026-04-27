@@ -17,6 +17,15 @@ from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 
+try:
+    from prophet import Prophet as _Prophet
+    _PROPHET_AVAILABLE = True
+    logging.getLogger("cmdstanpy").setLevel(logging.ERROR)
+    logging.getLogger("prophet").setLevel(logging.ERROR)
+except ImportError:
+    _Prophet = None
+    _PROPHET_AVAILABLE = False
+
 load_dotenv()
 
 logging.basicConfig(
@@ -31,10 +40,10 @@ app = Flask(__name__, static_folder="static")
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACION
 # ─────────────────────────────────────────────────────────────
-DB_SERVER = os.getenv("DB_SERVER")
-DB_NAME   = os.getenv("DB_NAME")
-DB_USER   = os.getenv("DB_USER")
-DB_PASS   = os.getenv("DB_PASS")
+DB_SERVER = "trkprdmanuf.database.windows.net"
+DB_NAME = "prdtraceability_db"
+DB_USER = "trk_r" # usuario SQL
+DB_PASS = "CopperHotelPlains54"# contrasena SQL
 
 # Constantes de comportamiento del dashboard
 HISTORICAL_LOAD_DAYS = 30
@@ -57,6 +66,12 @@ ANOMALY_STREAK_MIN_HOURS    = 4  # consecutive declining hours to flag a streak 
 ANOMALY_MAX_STREAK_GAP_HOURS = 2 # idle gap (h) that breaks a streak — hours further apart are not "consecutive"
 ANOMALY_WORK_HOUR_START     = 7  # ignore hours 00:00–06:59 (no production)
 ANOMALY_MIN_TESTS_PER_HOUR  = 10  # min tests in a bucket to be analysed (filters sparse/startup hours)
+
+# Forecasting
+FORECAST_HORIZON_HOURS   = 24   # hours to predict ahead
+FORECAST_MIN_DATA_POINTS = 48   # min hourly data points required to train a model
+FORECAST_MIN_TESTS_HOUR  = 3    # min tests per bucket included in training data
+FORECAST_CACHE_MAX_AGE_H = 6    # hours before a retrain is triggered
 
 GROUPS = {
     "SPSF":        [178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232],
@@ -233,6 +248,10 @@ _STATS_CACHE: dict = {}
 # Populated by compute_anomalies() after each successful DB refresh.
 _ANOMALY_CACHE: dict = {"alerts": [], "computed_at": None}
 
+# Populated by _train_and_cache_forecast() in a background thread.
+_FORECAST_CACHE: dict = {}   # stationName → {"forecast": [...], "trained_at": datetime}
+_FORECAST_LOCK = threading.Lock()
+
 def connect():
     conn_str = (
         f"DRIVER={{ODBC Driver 17 for SQL Server}};"
@@ -274,6 +293,7 @@ def load_historical_data():
             GLOBAL_CACHE["last_updated"] = datetime.now()
             logger.info("Initial load complete: %d records in memory.", len(df))
             _refresh_anomalies(df, "startup")
+            _maybe_refresh_forecast(df)
             return
         except Exception as exc:
             logger.error(
@@ -315,6 +335,7 @@ def _run_background_update():
             _STATS_CACHE.clear()
             logger.info("[BACKGROUND] Cache updated: %d total records.", len(new_df))
             _refresh_anomalies(new_df, "background")
+            _maybe_refresh_forecast(new_df)
             return
         except Exception as exc:
             logger.error(
@@ -591,6 +612,93 @@ def _refresh_anomalies(df: pd.DataFrame, context: str) -> None:
         logger.info("[ANOMALY:%s] Scan complete: %d alert(s).", context, len(alerts))
     except Exception as exc:
         logger.error("[ANOMALY:%s] Scan failed: %s", context, exc)
+
+
+# ─────────────────────────────────────────────────────────────
+# FORECASTING (Prophet)
+# ─────────────────────────────────────────────────────────────
+
+def _build_hourly_series(df: pd.DataFrame, station_name: str) -> pd.DataFrame:
+    """Return a Prophet-compatible (ds, y) DataFrame of hourly FPY for one station."""
+    sdf = df[df["stationName"] == station_name].copy()
+    if sdf.empty:
+        return pd.DataFrame(columns=["ds", "y"])
+    sdf["hour_bucket"] = sdf["endtime"].dt.floor("h")
+    hourly = (
+        sdf.groupby("hour_bucket")
+        .agg(total=("resultado", "count"), passed=("resultado", lambda x: (x == "PASSED").sum()))
+        .reset_index()
+    )
+    hourly = hourly[hourly["total"] >= FORECAST_MIN_TESTS_HOUR].copy()
+    hourly["fpy"] = hourly["passed"] / hourly["total"] * 100
+    return hourly.rename(columns={"hour_bucket": "ds", "fpy": "y"})[["ds", "y"]].reset_index(drop=True)
+
+
+def _forecast_cache_age_hours() -> float:
+    """Hours since the oldest cached forecast was trained. Returns inf when cache is empty."""
+    if not _FORECAST_CACHE:
+        return float("inf")
+    oldest = min(v["trained_at"] for v in _FORECAST_CACHE.values())
+    return (datetime.now() - oldest).total_seconds() / 3600
+
+
+def _train_and_cache_forecast(df: pd.DataFrame) -> None:
+    """Train one Prophet model per station and replace _FORECAST_CACHE. Designed to run in a daemon thread."""
+    if not _PROPHET_AVAILABLE:
+        return
+    station_names = df["stationName"].dropna().unique().tolist()
+    logger.info("[FORECAST] Training %d station model(s)...", len(station_names))
+    t0 = datetime.now()
+    new_cache: dict = {}
+
+    for sname in station_names:
+        try:
+            series = _build_hourly_series(df, sname)
+            if len(series) < FORECAST_MIN_DATA_POINTS:
+                continue
+            model = _Prophet(
+                daily_seasonality=True,
+                weekly_seasonality=True,
+                yearly_seasonality=False,
+                uncertainty_samples=300,
+                changepoint_prior_scale=0.05,
+                interval_width=0.80,
+            )
+            model.fit(series)
+            # make_future_dataframe includes history; tail() keeps only the future window
+            future = model.make_future_dataframe(periods=FORECAST_HORIZON_HOURS, freq="h")
+            fc = model.predict(future).tail(FORECAST_HORIZON_HOURS).copy()
+            for col in ("yhat", "yhat_lower", "yhat_upper"):
+                fc[col] = fc[col].clip(0, 100)
+            records = [
+                {
+                    "ds":         row["ds"].strftime("%Y-%m-%dT%H:%M:%S"),
+                    "hour":       row["ds"].strftime("%H:%M"),
+                    "yhat":       round(float(row["yhat"]), 1),
+                    "yhat_lower": round(float(row["yhat_lower"]), 1),
+                    "yhat_upper": round(float(row["yhat_upper"]), 1),
+                }
+                for _, row in fc.iterrows()
+            ]
+            new_cache[sname] = {"forecast": records, "trained_at": datetime.now()}
+        except Exception as exc:
+            logger.error("[FORECAST] %s: training failed: %s", sname, exc)
+
+    elapsed = (datetime.now() - t0).total_seconds()
+    with _FORECAST_LOCK:
+        _FORECAST_CACHE.clear()
+        _FORECAST_CACHE.update(new_cache)
+    logger.info("[FORECAST] Cache updated: %d station(s) in %.1fs.", len(new_cache), elapsed)
+
+
+def _maybe_refresh_forecast(df: pd.DataFrame) -> None:
+    """Start a background retrain if the forecast cache is empty or older than FORECAST_CACHE_MAX_AGE_H."""
+    if not _PROPHET_AVAILABLE:
+        return
+    age = _forecast_cache_age_hours()
+    if age >= FORECAST_CACHE_MAX_AGE_H:
+        logger.info("[FORECAST] Cache is %.1fh old — scheduling retrain.", age)
+        threading.Thread(target=_train_and_cache_forecast, args=(df.copy(),), daemon=True).start()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -947,6 +1055,54 @@ def api_anomalies():
         "alerts":      alerts,
         "count":       len(alerts),
         "computed_at": _ANOMALY_CACHE["computed_at"],
+    })
+
+
+@app.route("/api/forecast")
+def api_forecast():
+    """Next-shift FPY predictions per station, trained by Prophet on 30 days of hourly data."""
+    if not _PROPHET_AVAILABLE:
+        return jsonify({"error": "prophet is not installed on this server — run: pip install prophet"}), 503
+
+    product = request.args.get("product", "all")
+    try:
+        hours = max(1, min(int(request.args.get("hours", FORECAST_HORIZON_HOURS)), 48))
+    except ValueError:
+        hours = FORECAST_HORIZON_HOURS
+
+    df = GLOBAL_CACHE["df"]
+    if df.empty:
+        return jsonify({"error": "System is booting"}), 503
+
+    _maybe_refresh_forecast(df)
+
+    if not _FORECAST_CACHE:
+        return jsonify({
+            "ready":    False,
+            "message":  "Forecast models are being trained. Try again in a moment.",
+            "stations": {},
+        })
+
+    station_filter = None
+    if product != "all" and product in GROUPS:
+        ids = set(GROUPS[product])
+        station_filter = set(df[df["stationid"].isin(ids)]["stationName"].dropna())
+
+    with _FORECAST_LOCK:
+        result: dict = {}
+        for sname, entry in _FORECAST_CACHE.items():
+            if station_filter is not None and sname not in station_filter:
+                continue
+            result[sname] = {
+                "forecast":   entry["forecast"][:hours],
+                "trained_at": entry["trained_at"].strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+    return jsonify({
+        "ready":         True,
+        "horizon_hours": hours,
+        "generated_at":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "stations":      result,
     })
 
 

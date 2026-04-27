@@ -35,6 +35,8 @@
         .btn-nav { background: #1A2B3C; border: 1px solid #2C3E50; color: #8B9BAA; }
         .btn-nav:hover { background: #1E3A5F; color: #fff; }
         .btn-pause.paused { background: #E74C3C; color: #fff; }
+        .btn-forecast { background: #1A2B3C; border: 1px solid #00bcd4; color: #00bcd4; }
+        .btn-forecast.active { background: rgba(0,188,212,0.18); }
         .date-picker { background: #1A2B3C; border: 1px solid #2C3E50; color: #F4F6F8; padding: 7px 12px; border-radius: 6px; font-size: 13px; font-family: inherit; }
         
         /* Loading */
@@ -93,7 +95,8 @@
     <button class="btn btn-nav" style="margin-left: 20px;" onclick="prevStation()">&lt;</button>
     <button class="btn btn-nav" onclick="nextStation()">&gt;</button>
     <button class="btn btn-pause" id="btnPause" onclick="togglePause()">||</button>
-    
+    <button class="btn btn-forecast" id="btnForecast" onclick="toggleForecast()" style="margin-left: 20px;">Pronóstico</button>
+
     <input type="date" class="date-picker" id="datePicker" style="margin-left: 20px;" onchange="loadData()">
 </div>
 
@@ -111,11 +114,15 @@
     let autoCycleInterval = null;
     let dataRefreshInterval = null;
     let isPaused = false;
-    
+
     // Estado de datos
     let currentData = {};
     let groups = [];
     let currentGroupIndex = 0;
+
+    // Forecast state
+    let forecastData = {};   // keyed by stationName
+    let showForecast = false;
     
     // Función de colores
     function getBarColor(val) {
@@ -157,7 +164,31 @@
     // Inicializar Chart.js
     function initChart() {
         const ctx = document.getElementById('fpyChart').getContext('2d');
-        
+
+        // Plugin: vertical "now" marker when forecast is active
+        const nowLinePlugin = {
+            id: 'nowLine',
+            afterDraw(chart) {
+                const dStr = document.getElementById('datePicker').value;
+                const isToday = (dStr === new Date().toISOString().slice(0, 10));
+                if (!showForecast || !isToday) return;
+                const nowHour = new Date().getHours();
+                const meta = chart.getDatasetMeta(0);
+                if (!meta.data[nowHour]) return;
+                const { ctx: c, scales: { y } } = chart;
+                const xPos = meta.data[nowHour].x;
+                c.save();
+                c.strokeStyle = 'rgba(0,188,212,0.5)';
+                c.lineWidth = 1.5;
+                c.setLineDash([4, 4]);
+                c.beginPath();
+                c.moveTo(xPos, y.top);
+                c.lineTo(xPos, y.bottom);
+                c.stroke();
+                c.restore();
+            }
+        };
+
         // Plugin en línea para dibujar los textos arriba de las barras
         const topLabelsPlugin = {
             id: 'topLabels',
@@ -213,7 +244,7 @@
 
         chartObj = new Chart(ctx, {
             type: 'bar',
-            plugins: [topLabelsPlugin],
+            plugins: [nowLinePlugin, topLabelsPlugin],
             data: {
                 labels: Array.from({length: 24}, (_, i) => `${String(i).padStart(2, '0')}:00`),
                 datasets: [
@@ -222,7 +253,7 @@
                         label: 'FPY',
                         data: Array(24).fill(0),
                         backgroundColor: Array(24).fill('#2a2a2a'),
-                        order: 2,
+                        order: 3,
                         barPercentage: 0.7
                     },
                     {
@@ -233,8 +264,45 @@
                         borderWidth: 2,
                         pointBackgroundColor: '#ffffff',
                         pointRadius: 4,
-                        order: 1,
+                        order: 2,
                         spanGaps: true
+                    },
+                    {
+                        // Confidence band — upper bound fills down to the next dataset (lower bound)
+                        type: 'line',
+                        label: 'FC Upper',
+                        data: Array(24).fill(null),
+                        borderColor: 'transparent',
+                        backgroundColor: 'rgba(0,188,212,0.15)',
+                        fill: '+1',
+                        pointRadius: 0,
+                        order: 1,
+                        spanGaps: false
+                    },
+                    {
+                        // Confidence band — lower bound
+                        type: 'line',
+                        label: 'FC Lower',
+                        data: Array(24).fill(null),
+                        borderColor: 'transparent',
+                        backgroundColor: 'transparent',
+                        fill: false,
+                        pointRadius: 0,
+                        order: 1,
+                        spanGaps: false
+                    },
+                    {
+                        // Forecast center line
+                        type: 'line',
+                        label: 'Pronóstico',
+                        data: Array(24).fill(null),
+                        borderColor: '#00bcd4',
+                        borderDash: [6, 4],
+                        borderWidth: 2,
+                        pointBackgroundColor: '#00bcd4',
+                        pointRadius: 3,
+                        order: 0,
+                        spanGaps: false
                     }
                 ]
             },
@@ -274,6 +342,9 @@
             if(chartObj) {
                 chartObj.data.datasets[0].data = Array(24).fill(0);
                 chartObj.data.datasets[1].data = Array(24).fill(null);
+                chartObj.data.datasets[2].data = Array(24).fill(null);
+                chartObj.data.datasets[3].data = Array(24).fill(null);
+                chartObj.data.datasets[4].data = Array(24).fill(null);
                 chartObj.update();
             }
             return;
@@ -313,6 +384,31 @@
         chartObj.data.datasets[0].data = barData;
         chartObj.data.datasets[0].backgroundColor = barColors;
         chartObj.data.datasets[1].data = lineData;
+
+        // Forecast overlay — only when today's view and forecast is enabled
+        const nowHour = new Date().getHours();
+        const stForecast = (showForecast && isToday && forecastData[stat.stationName])
+            ? forecastData[stat.stationName].forecast : null;
+
+        const fcUpper  = Array(24).fill(null);
+        const fcLower  = Array(24).fill(null);
+        const fcCenter = Array(24).fill(null);
+
+        if (stForecast) {
+            stForecast.forEach(pt => {
+                if (!pt.ds || !pt.ds.startsWith(dStr)) return;
+                const h = parseInt(pt.hour.split(':')[0], 10);
+                if (h >= nowHour && h < 24) {
+                    fcCenter[h] = pt.yhat;
+                    fcUpper[h]  = pt.yhat_upper;
+                    fcLower[h]  = pt.yhat_lower;
+                }
+            });
+        }
+
+        chartObj.data.datasets[2].data = fcUpper;
+        chartObj.data.datasets[3].data = fcLower;
+        chartObj.data.datasets[4].data = fcCenter;
         chartObj.update();
     }
 
@@ -357,6 +453,33 @@
         loadData();
     }
 
+    async function loadForecast(dStr, product) {
+        try {
+            const res = await fetch(`/api/forecast?product=${encodeURIComponent(product)}&hours=24`);
+            const json = await res.json();
+            forecastData = json.ready ? (json.stations || {}) : {};
+        } catch (e) {
+            console.warn('[Forecast] load failed:', e);
+            forecastData = {};
+        }
+    }
+
+    function toggleForecast() {
+        showForecast = !showForecast;
+        document.getElementById('btnForecast').classList.toggle('active', showForecast);
+        const dStr    = document.getElementById('datePicker').value;
+        const product = new URLSearchParams(window.location.search).get('product') || 'all';
+        const isToday = (dStr === new Date().toISOString().slice(0, 10));
+        if (!showForecast) {
+            forecastData = {};
+            renderCurrentStation();
+        } else if (isToday) {
+            loadForecast(dStr, product).then(() => renderCurrentStation());
+        } else {
+            renderCurrentStation();
+        }
+    }
+
     // Cargar datos a la API
     async function loadData() {
         const dStr = document.getElementById('datePicker').value;
@@ -395,10 +518,20 @@
             
             currentData = json.data || {};
             groups = Object.keys(currentData).sort();
-            
+
             // Ajustar indice si se redujo el # de grupos
             if(currentGroupIndex >= groups.length) currentGroupIndex = 0;
-            
+
+            // Fetch forecast before rendering so the chart gets it in one shot
+            if (showForecast) {
+                const isToday = (dStr === new Date().toISOString().slice(0, 10));
+                if (isToday) {
+                    await loadForecast(dStr, product);
+                } else {
+                    forecastData = {};
+                }
+            }
+
             renderCurrentStation();
         } catch (e) {
             console.error("Error loading monitor data", e);

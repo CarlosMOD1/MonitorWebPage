@@ -809,22 +809,32 @@ def compute_rty(df: pd.DataFrame, product: str, date_from: str, date_to: str) ->
         })
 
     if not station_fpys:
-        return {"rty": 0.0, "stations": [], "sequence": [], "trend": [], "units": 0}
+        return {"rty": 0.0, "final_yield": 0.0, "entered": 0, "exited": 0,
+                "stations": [], "sequence": [], "trend": [], "units": 0}
 
     rty = 1.0
     for s in station_fpys:
         rty *= s["fpy_first"] / 100
     rty = round(rty * 100, 1)
 
+    # Final Yield: last test result per unit — did it eventually exit passing?
+    last    = sdf.sort_values("endtime").groupby("prevQr", sort=False).last()
+    entered = len(last)
+    exited  = int((last["resultado"] == "PASSED").sum())
+    fy      = round(exited / entered * 100, 1) if entered else 0.0
+
     # Sort by RTY loss — biggest problem stations first
     station_fpys.sort(key=lambda s: s["rty_loss"], reverse=True)
 
     return {
-        "rty":      rty,
-        "stations": station_fpys,
-        "sequence": [[s[0], s[1]] for s in _infer_station_sequence(sdf)],
-        "trend":    _compute_rty_trend(sdf),
-        "units":    int(first["prevQr"].nunique()),
+        "rty":         rty,
+        "final_yield": fy,
+        "entered":     entered,
+        "exited":      exited,
+        "stations":    station_fpys,
+        "sequence":    [[s[0], s[1]] for s in _infer_station_sequence(sdf)],
+        "trend":       _compute_rty_trend(sdf),
+        "units":       int(first["prevQr"].nunique()),
     }
 
 
@@ -1254,9 +1264,12 @@ def api_rty():
         for prod in GROUP_NAMES:
             r = compute_rty(df, prod, date_from, date_to)
             summary.append({
-                "product": prod,
-                "rty":     r["rty"],
-                "units":   r["units"],
+                "product":      prod,
+                "rty":          r["rty"],
+                "final_yield":  r["final_yield"],
+                "entered":      r["entered"],
+                "exited":       r["exited"],
+                "units":        r["units"],
                 "stations_count": len(r["stations"]),
             })
         summary.sort(key=lambda x: x["rty"])   # worst first

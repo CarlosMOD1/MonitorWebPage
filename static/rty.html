@@ -64,13 +64,22 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #0F1923; color: #
 .st-units { font-size: 9px; color: #5A6A7A; text-align: right; }
 
 /* Overview grid (all products) */
-.overview-grid { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px; overflow-y: auto; }
-.ov-card { background: #0F1923; border-radius: 10px; padding: 16px; min-width: 160px; flex: 1; text-align: center; cursor: pointer; border: 1px solid #1A2B3C; transition: border-color .2s; }
+.overview-grid { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px; overflow-y: auto; align-content: flex-start; }
+.ov-card { background: #0F1923; border-radius: 10px; padding: 14px 16px; min-width: 180px; flex: 1; cursor: pointer; border: 1px solid #1A2B3C; transition: border-color .2s; }
 .ov-card:hover { border-color: #2E9CDB; }
-.ov-rty { font-size: 36px; font-weight: 700; line-height: 1; }
-.ov-name { font-size: 10px; color: #8B9BAA; font-weight: 700; letter-spacing: .8px; margin-top: 6px; }
-.ov-units { font-size: 9px; color: #5A6A7A; margin-top: 4px; }
-.ov-bar { height: 3px; border-radius: 2px; margin-top: 10px; transition: width .4s; }
+.ov-name { font-size: 11px; color: #F4F6F8; font-weight: 700; letter-spacing: .5px; margin-bottom: 10px; }
+.ov-metrics { display: flex; gap: 8px; }
+.ov-metric { flex: 1; background: #1A2B3C; border-radius: 7px; padding: 10px 8px; text-align: center; }
+.ov-metric-val { font-size: 26px; font-weight: 700; line-height: 1; }
+.ov-metric-lbl { font-size: 8px; color: #8B9BAA; font-weight: 700; letter-spacing: .8px; margin-top: 4px; text-transform: uppercase; }
+.ov-metric-sub { font-size: 8px; color: #5A6A7A; margin-top: 3px; }
+.ov-bar { height: 3px; border-radius: 2px; margin-top: 10px; }
+
+/* Final Yield card in detail view */
+.fy-card { background: #1A2B3C; border-radius: 10px; padding: 14px 18px; text-align: center; border-top: 3px solid #2E9CDB; }
+.fy-number { font-size: 44px; font-weight: 700; line-height: 1; }
+.fy-label { font-size: 10px; font-weight: 700; color: #8B9BAA; letter-spacing: 1.5px; margin-top: 6px; text-transform: uppercase; }
+.fy-meta { font-size: 10px; color: #5A6A7A; margin-top: 6px; line-height: 1.7; }
 
 /* Loading overlay */
 .loading-overlay { position: fixed; inset: 0; background: rgba(15,25,35,.85); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; gap: 14px; }
@@ -226,12 +235,24 @@ function renderOverview(summary) {
   }
   let html = '<div class="overview-grid">';
   summary.forEach(s => {
-    const c = yieldColor(s.rty);
+    const rtyC = yieldColor(s.rty);
+    const fyC  = yieldColor(s.final_yield);
+    const fy   = s.final_yield ?? 0;
     html += `<div class="ov-card" onclick="selectProduct('${s.product}')">
-      <div class="ov-rty" style="color:${c}">${s.rty > 0 ? s.rty.toFixed(1) + '%' : '—'}</div>
-      <div class="ov-name">${s.product}</div>
-      <div class="ov-units">${fmt(s.units)} unidades &middot; ${s.stations_count} estaciones</div>
-      <div class="ov-bar" style="background:${c};width:${s.rty}%"></div>
+      <div class="ov-name">${s.product} &nbsp;<span style="font-size:9px;color:#5A6A7A;font-weight:400">${s.stations_count} estaciones · ${fmt(s.entered)} unidades</span></div>
+      <div class="ov-metrics">
+        <div class="ov-metric" style="border-top:2px solid ${rtyC}">
+          <div class="ov-metric-val" style="color:${rtyC}">${s.rty > 0 ? s.rty.toFixed(1) + '%' : '—'}</div>
+          <div class="ov-metric-lbl">RTY</div>
+          <div class="ov-metric-sub">FPY × FPY × …</div>
+        </div>
+        <div class="ov-metric" style="border-top:2px solid ${fyC}">
+          <div class="ov-metric-val" style="color:${fyC}">${fy > 0 ? fy.toFixed(1) + '%' : '—'}</div>
+          <div class="ov-metric-lbl">Final Yield</div>
+          <div class="ov-metric-sub">${fmt(s.exited)} / ${fmt(s.entered)}</div>
+        </div>
+      </div>
+      <div class="ov-bar" style="background:${rtyC};width:${s.rty}%"></div>
     </div>`;
   });
   html += '</div>';
@@ -266,6 +287,11 @@ function renderDetail(data) {
     .join(' × ');
   const formulaLine = formulaParts + (formulaParts ? ` = ${rty}%` : '');
 
+  const fy    = data.final_yield ?? 0;
+  const fyC   = yieldColor(fy);
+  const entered = fmt(data.entered ?? 0);
+  const exited  = fmt(data.exited  ?? 0);
+
   main.innerHTML = `
     <div class="left-panel">
       <div class="rty-card">
@@ -276,6 +302,11 @@ function renderDetail(data) {
           ${from} → ${to}
         </div>
         <div class="rty-formula">${formulaLine || '—'}</div>
+      </div>
+      <div class="fy-card">
+        <div class="fy-number" style="color:${fyC}">${fy > 0 ? fy.toFixed(1) + '%' : '—'}</div>
+        <div class="fy-label">Final Yield</div>
+        <div class="fy-meta">${exited} salieron ✓ / ${entered} entraron</div>
       </div>
       <div class="trend-card">
         <div class="card-title">Tendencia 30 días</div>

@@ -81,6 +81,9 @@ tbody tr:hover td{background:#1E3A5F}
 .status-bar .err{color:#E74C3C}
 /* Last updated */
 .refresh-info{display:flex;align-items:center;gap:6px;margin-left:auto}
+/* Badges */
+.scrap-badge{display:none;background:#FF6B35;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;margin-left:12px;vertical-align:middle;letter-spacing:1px;font-weight:700}
+.scrap-badge.active{display:inline-block}
 /* Scrollbar */
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-track{background:#0A1420}
@@ -115,9 +118,9 @@ tbody tr:hover td{background:#1E3A5F}
   <div class="modal-overlay" id="detailsModal">
     <div class="modal-content">
       <div class="modal-header">
-        <h3 id="modalTitle">Detalles</h3>
+        <h3 id="modalTitle">Details</h3>
         <div>
-          <button class="btn-refresh" id="btnDownloadCsv" style="background:#27AE60;margin-right:15px;padding:6px 12px;font-size:12px;">⬇️ Descargar CSV</button>
+          <button class="btn-refresh" id="btnDownloadCsv" style="background:#27AE60;margin-right:15px;padding:6px 12px;font-size:12px;">⬇️ Download CSV</button>
           <button class="close-btn" onclick="closeModal()">&times;</button>
         </div>
       </div>
@@ -127,9 +130,9 @@ tbody tr:hover td{background:#1E3A5F}
             <tr>
               <th>QR</th>
               <th>Station</th>
-              <th>Tipo de Falla</th>
+              <th>Failure Type</th>
               <th>Failure Code</th>
-              <th>Notas</th>
+              <th>Notes</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -158,17 +161,18 @@ tbody tr:hover td{background:#1E3A5F}
   <div class="main">
     <div class="hdr">
       <div>
-        <h1>&#9889; Failure <span>Monitoring</span></h1>
+        <h1>&#9889; Failure <span>Monitoring</span> <span id="scrapBadge" class="scrap-badge">⚠ UNIQUE QRS</span></h1>
         <div class="period" id="periodLabel"></div>
       </div>
       <div class="date-range">
         <button class="btn-refresh" style="background:#8B9BAA;margin-right:10px;" onclick="openMonitor()">Monitor FPY</button>
-        <button class="btn-real" id="btnReal" onclick="toggleRealFailures()">&#9888; Fallas Reales</button>
+        <button class="btn-real" id="btnReal" onclick="toggleRealFailures()">Unique QRs</button>
         <label>From</label>
         <input type="date" id="dateFrom">
         <label>To</label>
         <input type="date" id="dateTo">
         <button class="btn-refresh" id="btnFilter" onclick="applyDateFilter()">&#128260; Filter</button>
+        <button class="btn-refresh" style="background:#27AE60;margin-left:10px;" onclick="downloadAllCsv()">⬇️ Export CSV</button>
       </div>
     </div>
 
@@ -583,7 +587,6 @@ function renderPeriod() {
   const dt   = new Date(DATA.overall.dateTo   + 'T00:00:00');
   const opts = {day:'2-digit', month:'short', year:'numeric'};
   let text = df.toLocaleDateString('es-MX', opts) + ' – ' + dt.toLocaleDateString('es-MX', opts);
-  if (realFailuresMode) text += '  ⚠ FALLAS REALES';
   document.getElementById('periodLabel').textContent = text;
 }
 
@@ -603,8 +606,25 @@ function toggleRealFailures() {
   realFailuresMode = !realFailuresMode;
   const btn = document.getElementById('btnReal');
   btn.classList.toggle('active', realFailuresMode);
-  btn.innerHTML = realFailuresMode ? '&#9888; Total Fallas' : '&#9888; Fallas Reales';
+  btn.innerHTML = realFailuresMode ? 'Total Failures' : 'Unique QRs';
+  
+  const badge = document.getElementById('scrapBadge');
+  if (badge) badge.classList.toggle('active', realFailuresMode);
+  
   applyDateFilter();
+}
+
+// ── Download General CSV ────────────────────────────
+function downloadAllCsv() {
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  const prod = activeProduct;
+  const stat = activeStation !== 'all' ? activeStation : '';
+  const stationFilter = stat ? `&stationid=${encodeURIComponent(stat)}` : '';
+  const rf = realFailuresMode;
+  
+  const url = `/api/export_all_csv?from=${from}&to=${to}&product=${prod}${stationFilter}&real_failures=${rf}`;
+  window.open(url, '_blank');
 }
 
 // ── Render Pass/Fail Pie ─────────────────────────────
@@ -733,7 +753,7 @@ async function showPassFailDetails(resultado) {
   const stationFilter = stat ? `&stationid=${encodeURIComponent(stat)}` : '';
 
   const stationLabel = stat ? `(Station ${stat})` : '';
-  const label = resultado === 'PASSED' ? 'Registros PASSED' : 'Registros FAILED';
+  const label = resultado === 'PASSED' ? 'PASSED Records' : 'FAILED Records';
   document.getElementById('modalTitle').innerText = (prod !== 'all' ? prod + ' — ' : '') + stationLabel + ' ' + label;
   
   const urlBase = `/api/passfail_details?from=${from}&to=${to}&product=${prod}${stationFilter}&resultado=${resultado}&real_failures=${realFailuresMode}`;
@@ -741,7 +761,7 @@ async function showPassFailDetails(resultado) {
   btnCsv.onclick = () => window.open(urlBase + '&csv=true', '_blank');
 
   const tbody = document.querySelector('#modalTable tbody');
-  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Cargando datos...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Loading data...</td></tr>';
   document.getElementById('detailsModal').style.display = 'flex';
 
   try {
@@ -753,7 +773,7 @@ async function showPassFailDetails(resultado) {
     }
     tbody.innerHTML = '';
     if (data.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Sin registros.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">No records found.</td></tr>';
       return;
     }
     data.forEach(row => {
@@ -773,7 +793,7 @@ async function showPassFailDetails(resultado) {
       tbody.appendChild(tr);
     });
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error de conexion.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Connection error.</td></tr>';
   }
 }
 
@@ -797,7 +817,7 @@ async function showDetails(falla, stationId = null, stationName = '') {
   btnCsv.onclick = () => window.open(urlBase + '&csv=true', '_blank');
 
   const tbody = document.querySelector('#modalTable tbody');
-  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Cargando datos...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Loading data...</td></tr>';
   document.getElementById('detailsModal').style.display = 'flex';
 
   try {
@@ -809,7 +829,7 @@ async function showDetails(falla, stationId = null, stationName = '') {
     }
     tbody.innerHTML = '';
     if (data.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Sin registros.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">No records found.</td></tr>';
       return;
     }
     data.forEach(row => {
@@ -827,7 +847,7 @@ async function showDetails(falla, stationId = null, stationName = '') {
       tbody.appendChild(tr);
     });
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error de conexion.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Connection error.</td></tr>';
   }
 }
 

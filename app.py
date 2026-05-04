@@ -646,6 +646,64 @@ def api_passfail_details():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/export_all_csv")
+def api_export_all_csv():
+    """Descarga de CSV completo para todas las pruebas filtradas por los controles actuales."""
+    date_from_str = request.args.get("from", (datetime.now() - timedelta(days=DEFAULT_QUERY_RANGE_DAYS)).strftime("%Y-%m-%d"))
+    date_to_str   = request.args.get("to",   datetime.now().strftime("%Y-%m-%d"))
+    product       = request.args.get("product", "all")
+    station_id_str = request.args.get("stationid", "all")
+    real_failures = request.args.get("real_failures", "false").lower() == "true"
+
+    try:
+        df = GLOBAL_CACHE["df"]
+        if df.empty:
+            return "System is booting", 503
+
+        dt_from = pd.to_datetime(date_from_str)
+        dt_to   = pd.to_datetime(date_to_str) + timedelta(days=1)
+
+        mask = (df['endtime'] >= dt_from) & (df['endtime'] < dt_to)
+        sub = df[mask].copy()
+
+        if product != "all":
+            sub = sub[sub["producto"] == product]
+
+        if station_id_str != "all":
+            try:
+                station_id = int(station_id_str)
+                sub = sub[sub["stationid"] == station_id]
+            except ValueError:
+                return "stationid invalido", 400
+
+        if sub.empty:
+            return "No data found", 404
+
+        if real_failures:
+            now = datetime.now()
+            cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
+            idx = sub.groupby("prevQr")["endtime"].idxmax()
+            last_per_qr = sub.loc[idx]
+            sub = last_per_qr[
+                (last_per_qr["resultado"] == "PASSED") |
+                ((last_per_qr["resultado"] == "FAILED") & (last_per_qr["endtime"] < cutoff))
+            ]
+
+        sub = sub.sort_values("endtime", ascending=False)
+        
+        from flask import Response
+        cols = ["endtime", "currQr", "prevQr", "stationName", "producto", "failureCode", "tipoFalla", "resultado", "notes"]
+        csv_data = sub[[c for c in cols if c in sub.columns]].to_csv(index=False)
+        
+        return Response(
+            csv_data,
+            mimetype="text/csv",
+            headers={"Content-disposition": "attachment; filename=all_tests_export.csv"}
+        )
+    except Exception as e:
+        return str(e), 500
+
+
 @app.route("/api/data")
 def api_data():
     date_from_str = request.args.get("from", (datetime.now() - timedelta(days=DEFAULT_QUERY_RANGE_DAYS)).strftime("%Y-%m-%d"))

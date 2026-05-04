@@ -116,7 +116,10 @@ tbody tr:hover td{background:#1E3A5F}
     <div class="modal-content">
       <div class="modal-header">
         <h3 id="modalTitle">Detalles</h3>
-        <button class="close-btn" onclick="closeModal()">&times;</button>
+        <div>
+          <button class="btn-refresh" id="btnDownloadCsv" style="background:#27AE60;margin-right:15px;padding:6px 12px;font-size:12px;">⬇️ Descargar CSV</button>
+          <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
       </div>
       <div class="modal-body">
         <table class="data-table" id="modalTable">
@@ -726,16 +729,23 @@ async function showPassFailDetails(resultado) {
   const from = document.getElementById('dateFrom').value;
   const to   = document.getElementById('dateTo').value;
   const prod = activeProduct;
+  const stat = activeStation !== 'all' ? activeStation : '';
+  const stationFilter = stat ? `&stationid=${encodeURIComponent(stat)}` : '';
 
+  const stationLabel = stat ? `(Station ${stat})` : '';
   const label = resultado === 'PASSED' ? 'Registros PASSED' : 'Registros FAILED';
-  document.getElementById('modalTitle').innerText = (prod !== 'all' ? prod + ' — ' : '') + label;
+  document.getElementById('modalTitle').innerText = (prod !== 'all' ? prod + ' — ' : '') + stationLabel + ' ' + label;
+  
+  const urlBase = `/api/passfail_details?from=${from}&to=${to}&product=${prod}${stationFilter}&resultado=${resultado}&real_failures=${realFailuresMode}`;
+  const btnCsv = document.getElementById('btnDownloadCsv');
+  btnCsv.onclick = () => window.open(urlBase + '&csv=true', '_blank');
+
   const tbody = document.querySelector('#modalTable tbody');
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Cargando datos...</td></tr>';
   document.getElementById('detailsModal').style.display = 'flex';
 
   try {
-    const url = `/api/passfail_details?from=${from}&to=${to}&product=${prod}&resultado=${resultado}&real_failures=${realFailuresMode}`;
-    const resp = await fetch(url);
+    const resp = await fetch(urlBase);
     const data = await resp.json();
     if (!resp.ok) {
       tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error: ${data.error}</td></tr>`;
@@ -749,13 +759,16 @@ async function showPassFailDetails(resultado) {
     data.forEach(row => {
       const tr = document.createElement('tr');
       const qr = row.currQr || row.prevQr || '-';
-      const resColor = row.resultado === 'PASSED' ? '#00D4AA' : '#E74C3C';
+      const notesText = row.notes || '-';
+      const escaped = notesText.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const isPassed = row.resultado === 'PASSED';
+      const fallbackFalla = isPassed ? 'PASSED' : (row.resultado || '-');
       tr.innerHTML = `
         <td>${qr}</td>
         <td>${row.stationName || '-'}</td>
-        <td style="color:${resColor};font-weight:600">${row.resultado || '-'}</td>
+        <td style="color:${isPassed?'#00D4AA':'#E74C3C'};font-weight:600">${row.tipoFalla || fallbackFalla}</td>
         <td>${row.failureCode || '-'}</td>
-        <td style="color:#8B9BAA;font-size:10px">${row.endtime || '-'}</td>
+        <td class="notes-cell" onclick="this.classList.toggle('expanded')">${escaped}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -778,13 +791,17 @@ async function showDetails(falla, stationId = null, stationName = '') {
   const titlePrefix = (prod !== 'all' ? prod + ' — ' : '') + (stationLabel ? stationLabel + ' — ' : '');
 
   document.getElementById('modalTitle').innerText = titlePrefix + falla;
+  
+  const urlBase = `/api/failure_details?from=${from}&to=${to}&product=${prod}${stationFilter}&falla=${encodeURIComponent(falla)}&real_failures=${realFailuresMode}`;
+  const btnCsv = document.getElementById('btnDownloadCsv');
+  btnCsv.onclick = () => window.open(urlBase + '&csv=true', '_blank');
+
   const tbody = document.querySelector('#modalTable tbody');
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Cargando datos...</td></tr>';
   document.getElementById('detailsModal').style.display = 'flex';
 
   try {
-    const url = `/api/failure_details?from=${from}&to=${to}&product=${prod}${stationFilter}&falla=${encodeURIComponent(falla)}&real_failures=${realFailuresMode}`;
-    const resp = await fetch(url);
+    const resp = await fetch(urlBase);
     const data = await resp.json();
     if (!resp.ok) {
       tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error: ${data.error}</td></tr>`;

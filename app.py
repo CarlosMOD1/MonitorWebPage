@@ -305,7 +305,21 @@ def filter_real_failures(df):
     return real
 
 
-def compute_stats(df, date_from, date_to):
+def compute_stats(df, date_from, date_to, real_failures=False):
+    now = datetime.now()
+    cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
+
+    def get_kpi_data(data, group_cols):
+        if not real_failures:
+            return data
+        # Unique QRs passed or failed > time
+        idx = data.groupby(group_cols + ["currQr"])["endtime"].idxmax()
+        last = data.loc[idx]
+        return last[
+            (last["resultado"] == "PASSED") | 
+            ((last["resultado"] == "FAILED") & (last["endtime"] < cutoff))
+        ]
+
     def kpis(d):
         t  = len(d)
         p  = (d["resultado"] == "PASSED").sum()
@@ -319,22 +333,36 @@ def compute_stats(df, date_from, date_to):
             "fpy":    round(fp / t * 100, 1) if t else 0,
         }
 
-    overall = kpis(df)
+    # Data scopeado globalmente
+    data_overall = get_kpi_data(df, [])
+    overall = kpis(data_overall)
     overall["dateFrom"] = date_from
     overall["dateTo"]   = date_to
 
-    by_product = {prod: kpis(grp) for prod, grp in df.groupby("producto")}
+    # Data scopeado por producto
+    data_prod = get_kpi_data(df, ["producto"])
+    by_product = {prod: kpis(grp) for prod, grp in data_prod.groupby("producto")}
 
+    # Data scopeado por estación (y producto referencial)
+    data_stat = get_kpi_data(df, ["stationid", "stationName", "producto"])
     stations = []
-    for (sid, sname, prod), grp in df.groupby(["stationid", "stationName", "producto"]):
+    for (sid, sname, prod), grp in data_stat.groupby(["stationid", "stationName", "producto"]):
         k = kpis(grp)
         stations.append({"id": int(sid), "name": sname, "producto": prod, **k})
     stations.sort(key=lambda x: x["failed"], reverse=True)
 
-    df_f = df[
-        (df["resultado"] == "FAILED") &
-        (df["tipoFalla"] != "") &
-        df["tipoFalla"].notna()
+    # Data de fail modes: scopeados por estación, producto y Falla
+    if real_failures:
+        # Usamos data_stat (que contiene el último intento por QR por estación).
+        # Si su estado final fue PASSED, ya no aparecerá como falla.
+        data_f = data_stat
+    else:
+        data_f = df
+
+    df_f = data_f[
+        (data_f["resultado"] == "FAILED") &
+        (data_f["tipoFalla"] != "") &
+        data_f["tipoFalla"].notna()
     ]
     failures = []
     for (sid, sname, prod, falla), grp in df_f.groupby(
@@ -515,9 +543,6 @@ def api_failure_details():
         mask = (df['endtime'] >= dt_from) & (df['endtime'] < dt_to)
         sub = df[mask].copy()
 
-        if real_failures:
-            sub = filter_real_failures(sub)
-
         if product != "all":
             sub = sub[sub["producto"] == product]
 
@@ -528,8 +553,20 @@ def api_failure_details():
             except ValueError:
                 return jsonify({"error": "stationid invalido"}), 400
 
-        # Solo registros FAILED
-        sub = sub[sub["resultado"] == "FAILED"]
+        if real_failures:
+            # Obtener el último estatus (sea PASS o FAIL) de cada QR en este cruce de est/prod
+            now = datetime.now()
+            cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
+            idx = sub.groupby("currQr")["endtime"].idxmax()
+            last_per_qr = sub.loc[idx]
+            # De ese último estatus, quedarse solo con los que hayan fallado hace más de X horas
+            sub = last_per_qr[
+                (last_per_qr["resultado"] == "FAILED") & 
+                (last_per_qr["endtime"] < cutoff)
+            ]
+        else:
+            # En modo completo, solo registros FAILED
+            sub = sub[sub["resultado"] == "FAILED"]
 
         if falla:
             sub = sub[sub["tipoFalla"] == falla]
@@ -724,18 +761,23 @@ def api_data():
 
         # Calcular pass/fail pie con desglose por producto y estación
         if real_failures and not df_filtered.empty:
-            # Último registro por currQr (incluye PASSED y FAILED)
             now = datetime.now()
             cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
-            idx = df_filtered.groupby("currQr")["endtime"].idxmax()
-            last_per_qr = df_filtered.loc[idx]
 
-            # Solo contar como "failed" los que tienen >24h (misma lógica que filter_real_failures)
-            # Los FAILED recientes (<24h) no se cuentan ni como pass ni como fail — están en proceso
-            relevant = last_per_qr[
-                (last_per_qr["resultado"] == "PASSED") |
-                ((last_per_qr["resultado"] == "FAILED") & (last_per_qr["endtime"] < cutoff))
-            ]
+            def get_relevant(sub_df, by):
+                if not by:
+                    idx = sub_df.groupby("currQr")["endtime"].idxmax()
+                else:
+                    idx = sub_df.groupby(by + ["currQr"])["endtime"].idxmax()
+                last = sub_df.loc[idx]
+                return last[
+                    (last["resultado"] == "PASSED") |
+                    ((last["resultado"] == "FAILED") & (last["endtime"] < cutoff))
+                ]
+
+            relevant_overall = get_relevant(df_filtered, [])
+            relevant_product = get_relevant(df_filtered, ["producto"])
+            relevant_station = get_relevant(df_filtered, ["stationid"])
 
             def _pf(d):
                 p = int((d["resultado"] == "PASSED").sum())
@@ -748,13 +790,14 @@ def api_data():
                     "yield":  round(p / t * 100, 1) if t else 0,
                 }
 
-            pf_overall = _pf(relevant)
+            pf_overall = _pf(relevant_overall)
+            
             pf_by_product = {}
-            for prod, grp in relevant.groupby("producto"):
+            for prod, grp in relevant_product.groupby("producto"):
                 pf_by_product[prod] = _pf(grp)
 
             pf_by_station = {}
-            for sid, grp in relevant.groupby("stationid"):
+            for sid, grp in relevant_station.groupby("stationid"):
                 pf_by_station[int(sid)] = _pf(grp)
 
             pass_fail_pie = {
@@ -763,12 +806,12 @@ def api_data():
                 "byStation": pf_by_station,
             }
 
-            # Ahora filtrar solo fallas reales para el resto de stats
-            df_filtered = filter_real_failures(df_filtered)
+            # Ya no filtramos df_filtered porque se enviará entero a compute_stats, 
+            # y compute_stats hará el filtrado por sus propios axis.
         else:
             pass_fail_pie = None
-        
-        stats = compute_stats(df_filtered, date_from_str, date_to_str)
+
+        stats = compute_stats(df_filtered, date_from_str, date_to_str, real_failures=real_failures)
         stats["realFailures"] = real_failures
         if pass_fail_pie:
             stats["passFailPie"] = pass_fail_pie

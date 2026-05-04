@@ -30,7 +30,7 @@ DB_USER   = os.getenv("DB_USER")
 DB_PASS   = os.getenv("DB_PASS")
 
 # Constantes de comportamiento del dashboard
-HISTORICAL_LOAD_DAYS = 30
+HISTORICAL_LOAD_DAYS = 365
 RECENT_REFRESH_DAYS = 2
 REFRESH_INTERVAL_MINUTES = 15
 REAL_FAILURE_HOURS = 3
@@ -284,7 +284,7 @@ def background_update_worker():
 
 def filter_real_failures(df):
     """
-    Filtra 'fallas reales': para cada prevQr, toma el último registro.
+    Filtra 'fallas reales': para cada currQr, toma el último registro.
     Si ese último registro es FAILED y tiene más de 24h de antigüedad,
     se considera falla real (producto que no pudo ser reprocesado).
     """
@@ -293,8 +293,8 @@ def filter_real_failures(df):
     now = datetime.now()
     cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
 
-    # Último registro por prevQr
-    idx = df.groupby("prevQr")["endtime"].idxmax()
+    # Último registro por currQr
+    idx = df.groupby("currQr")["endtime"].idxmax()
     last_per_qr = df.loc[idx]
 
     # Solo los que su último intento fue FAILED y tiene >24h
@@ -579,10 +579,10 @@ def api_passfail_details():
             return jsonify([])
 
         if real_failures:
-            # Último registro por prevQr
+            # Último registro por currQr
             now = datetime.now()
             cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
-            idx = sub.groupby("prevQr")["endtime"].idxmax()
+            idx = sub.groupby("currQr")["endtime"].idxmax()
             last_per_qr = sub.loc[idx]
             # Solo los relevantes (passed o failed >24h)
             sub = last_per_qr[
@@ -632,10 +632,10 @@ def api_data():
 
         # Calcular pass/fail pie con desglose por producto y estación
         if real_failures and not df_filtered.empty:
-            # Último registro por prevQr (incluye PASSED y FAILED)
+            # Último registro por currQr (incluye PASSED y FAILED)
             now = datetime.now()
             cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
-            idx = df_filtered.groupby("prevQr")["endtime"].idxmax()
+            idx = df_filtered.groupby("currQr")["endtime"].idxmax()
             last_per_qr = df_filtered.loc[idx]
 
             # Solo contar como "failed" los que tienen >24h (misma lógica que filter_real_failures)

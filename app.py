@@ -30,7 +30,7 @@ DB_USER   = os.getenv("DB_USER")
 DB_PASS   = os.getenv("DB_PASS")
 
 # Constantes de comportamiento del dashboard
-HISTORICAL_LOAD_DAYS = 365
+HISTORICAL_LOAD_DAYS = 31
 RECENT_REFRESH_DAYS = 2
 REFRESH_INTERVAL_MINUTES = 15
 REAL_FAILURE_HOURS = 3
@@ -682,7 +682,7 @@ def api_export_all_csv():
         if real_failures:
             now = datetime.now()
             cutoff = now - timedelta(hours=REAL_FAILURE_HOURS)
-            idx = sub.groupby("prevQr")["endtime"].idxmax()
+            idx = sub.groupby("currQr")["endtime"].idxmax()
             last_per_qr = sub.loc[idx]
             sub = last_per_qr[
                 (last_per_qr["resultado"] == "PASSED") |

@@ -40,10 +40,10 @@ app = Flask(__name__, static_folder="static")
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACION
 # ─────────────────────────────────────────────────────────────
-DB_SERVER = "trkprdmanuf.database.windows.net"
-DB_NAME = "prdtraceability_db"
-DB_USER = "trk_r" # usuario SQL
-DB_PASS = "CopperHotelPlains54"# contrasena SQL
+DB_SERVER = os.getenv("DB_SERVER")
+DB_NAME   = os.getenv("DB_NAME")
+DB_USER   = os.getenv("DB_USER")
+DB_PASS   = os.getenv("DB_PASS")
 
 # Constantes de comportamiento del dashboard
 HISTORICAL_LOAD_DAYS = 31

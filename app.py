@@ -234,34 +234,50 @@ GLOBAL_CACHE = {
     "last_updated": None
 }
 
+def _get_odbc_driver():
+    """Detecta el driver ODBC de SQL Server disponible. Prefiere 18, cae a 17."""
+    available = pyodbc.drivers()
+    for preferred in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server"):
+        if preferred in available:
+            print(f" [DB] Usando driver: {preferred}")
+            return preferred
+    # Ultimo recurso: cualquier driver de SQL Server disponible
+    for d in available:
+        if "SQL Server" in d:
+            print(f" [DB] Usando driver (fallback): {d}")
+            return d
+    raise RuntimeError(f"No se encontro ningun driver ODBC de SQL Server. Disponibles: {available}")
+
+_ODBC_DRIVER = _get_odbc_driver()
+
 def connect():
     conn_str = (
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"DRIVER={{{_ODBC_DRIVER}}};"
         f"SERVER={DB_SERVER};"
         f"DATABASE={DB_NAME};"
         f"UID={DB_USER};"
         f"PWD={DB_PASS};"
-        f"Encrypt=yes;TrustServerCertificate=no;"
+        f"Encrypt=yes;TrustServerCertificate=yes;"
     )
     return pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT_SECONDS)
 
 def connect_qr():
     """Conexion a la BD de tracking de QR (trkprdshipapp)."""
     conn_str = (
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"DRIVER={{{_ODBC_DRIVER}}};"
         f"SERVER={DB_SERVER};"
         f"DATABASE={DB_NAME_QR};"
         f"UID={DB_USER};"
         f"PWD={DB_PASS};"
-        f"Encrypt=yes;TrustServerCertificate=no;"
+        f"Encrypt=yes;TrustServerCertificate=yes;"
     )
     return pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT_SECONDS)
 
 def lookup_model_numbers(qr_codes):
     """
-    Consulta trkprdshipapp.trk.qrmac_db y devuelve {qrcode: modelNumber}
-    para los QR codes proporcionados. Usa parametros seguros en lotes de 500.
-    Si falla la conexion, devuelve {} y los registros quedan en "SPSF" (fallback).
+    Consulta trkprdshipapp.trk.qrmac_db usando la conexion principal con nombre
+    de 3 partes (cross-database query). Evita abrir una segunda conexion.
+    Devuelve {qrcode: modelNumber}. Si falla, devuelve {} y el fallback es "SPSF".
     """
     unique_qrs = [
         str(q) for q in qr_codes
@@ -273,17 +289,17 @@ def lookup_model_numbers(qr_codes):
     result = {}
     batch_size = 500
     try:
-        conn = connect_qr()
+        conn = connect()
         for i in range(0, len(unique_qrs), batch_size):
             chunk = unique_qrs[i : i + batch_size]
             placeholders = ",".join("?" for _ in chunk)
-            sql = f"SELECT qrcode, modelNumber FROM trk.qrmac_db WHERE qrcode IN ({placeholders})"
+            sql = f"SELECT qrcode, modelNumber FROM {DB_NAME_QR}.trk.qrmac_db WHERE qrcode IN ({placeholders})"
             for row in conn.execute(sql, chunk).fetchall():
                 if row[1] is not None:
                     result[str(row[0])] = str(row[1]).strip()
         conn.close()
     except Exception as e:
-        print(f"[WARNING] lookup_model_numbers: no se pudo consultar {DB_NAME_QR}: {e}")
+        print(f"[WARNING] lookup_model_numbers: fallo cross-DB query a {DB_NAME_QR}: {e}")
 
     return result
 

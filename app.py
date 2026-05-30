@@ -36,9 +36,9 @@ MODEL_NUMBER_TO_PRODUCT = {
     "GBP-3003": "Blade",
 }
 
-# Estaciones compartidas SPSF/Blade que NO pueden diferenciarse por modelNumber.
-# Sus registros aparecerán duplicados en ambos productos.
-UNDIFF_STATIONS = {406, 393}
+# Todas las estaciones de SPSF/Blade prueban componentes que pueden ir a cualquier producto.
+# Todos sus registros se duplican — aparecen en ambos productos.
+UNDIFF_STATIONS = set(_SPSF_STATIONS)
 
 # Constantes de comportamiento del dashboard
 HISTORICAL_LOAD_DAYS = 31
@@ -64,10 +64,9 @@ GROUPS = {
     "Opal 4":      [289,290,291,292,293,294,295],
 }
 
-# Estaciones que SPSF y Blade comparten (incluyendo las no-diferenciables)
+# Todas las estaciones de SPSF/Blade son compartidas y no diferenciables
 SPSF_BLADE_STATIONS      = set(_SPSF_STATIONS)
-# Estaciones donde SI podemos resolver el producto via modelNumber
-SPSF_BLADE_DIFF_STATIONS = SPSF_BLADE_STATIONS - UNDIFF_STATIONS
+SPSF_BLADE_DIFF_STATIONS = set()  # ninguna estacion es diferenciable por modelNumber
 
 # STATION_TO_GROUP: primer grupo que registra la estacion gana (SPSF para estaciones compartidas).
 # Para las estaciones compartidas, prepare_dataframe sobreescribe con el valor de modelNumber.
@@ -316,29 +315,15 @@ def prepare_dataframe(df):
     # Asignacion inicial por estacion (comportamiento base para productos no-compartidos)
     df["producto"] = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
 
-    # ── Resolver SPSF vs Blade para estaciones compartidas ──────────────────
+    # ── Estaciones compartidas SPSF/Blade: duplicar todas las filas ────────
+    # Todas las estaciones prueban componentes sin producto asignado,
+    # por lo que cada registro aparece en ambos productos.
     shared_mask = df["stationid"].isin(SPSF_BLADE_STATIONS)
     if shared_mask.any():
-        # Consultar modelNumber en trkprdshipapp para todos los QR's involucrados
-        shared_qrs = df.loc[shared_mask, "currQr"].dropna().unique().tolist()
-        model_map  = lookup_model_numbers(shared_qrs)
-
-        # Estaciones diferenciables: sobreescribir producto por modelNumber
-        # Fallback a "SPSF" si el QR no existe en trkprdshipapp o el modelNumber es desconocido
-        diff_mask = shared_mask & df["stationid"].isin(SPSF_BLADE_DIFF_STATIONS)
-        if diff_mask.any():
-            df.loc[diff_mask, "producto"] = df.loc[diff_mask, "currQr"].map(
-                lambda qr: MODEL_NUMBER_TO_PRODUCT.get(model_map.get(str(qr), ""), "SPSF")
-            )
-
-        # Estaciones NO diferenciables (406, 393):
-        # Duplicar filas → original queda como "SPSF", copia queda como "Blade"
-        undiff_mask = shared_mask & df["stationid"].isin(UNDIFF_STATIONS)
-        if undiff_mask.any():
-            df.loc[undiff_mask, "producto"] = "SPSF"
-            blade_rows = df.loc[undiff_mask].copy()
-            blade_rows["producto"] = "Blade"
-            df = pd.concat([df, blade_rows], ignore_index=True)
+        df.loc[shared_mask, "producto"] = "SPSF"
+        blade_rows = df.loc[shared_mask].copy()
+        blade_rows["producto"] = "Blade"
+        df = pd.concat([df, blade_rows], ignore_index=True)
 
     # Pre-calcular tipo de falla una sola vez
     df["tipoFalla"] = df.apply(
@@ -641,32 +626,60 @@ def api_debug(grupo):
 def api_debug_blade():
     """
     Diagnostico especifico para el split SPSF/Blade.
-    Toma los primeros 5 QRs de estaciones compartidas del cache y prueba el lookup.
-    Ejemplo: /api/debug_blade
+    Acepta ?qr=F0-XXXXX para probar un QR especifico.
+    Sin parametro, busca QRs de estaciones diff que SI esten en trkprdshippapp.
+    Ejemplo: /api/debug_blade?qr=F0-190526-M20046
     """
     try:
         df = GLOBAL_CACHE["df"]
         if df.empty:
             return jsonify({"error": "Cache vacio, espera a que cargue"}), 503
 
-        shared = df[df["stationid"].isin(SPSF_BLADE_STATIONS)].copy()
-        sample_qrs = shared["currQr"].dropna().unique()[:5].tolist()
+        qr_param = request.args.get("qr", "").strip()
+
+        if qr_param:
+            sample_qrs = [qr_param]
+        else:
+            # Tomar QRs SOLO de estaciones diferenciables (no undiff)
+            diff_df = df[df["stationid"].isin(SPSF_BLADE_DIFF_STATIONS)].copy()
+            sample_qrs = diff_df["currQr"].dropna().unique()[:10].tolist()
 
         model_map = lookup_model_numbers(sample_qrs)
 
-        blade_count = int((df["producto"] == "Blade").sum())
-        spsf_count  = int((df["producto"] == "SPSF").sum())
+        # Query directo para ver exactamente que devuelve la BD
+        raw_rows = []
+        try:
+            conn = connect()
+            for qr in sample_qrs[:5]:
+                rows = conn.execute(
+                    f"SELECT TOP 1 qrcode, modelNumber FROM {DB_NAME_QR}.trk.qrmac_db WHERE qrcode = ?",
+                    [qr]
+                ).fetchall()
+                raw_rows.append({
+                    "qr": qr,
+                    "found": len(rows) > 0,
+                    "modelNumber": rows[0][1] if rows else None
+                })
+            conn.close()
+        except Exception as e:
+            raw_rows = [{"error": str(e)}]
+
+        blade_count    = int((df["producto"] == "Blade").sum())
+        spsf_count     = int((df["producto"] == "SPSF").sum())
         blade_stations = sorted(df[df["producto"] == "Blade"]["stationid"].unique().tolist())
+        diff_qr_count  = int(df[df["stationid"].isin(SPSF_BLADE_DIFF_STATIONS)]["currQr"].nunique())
 
         return jsonify({
-            "sample_qrs_tested":    sample_qrs,
-            "model_map_result":     model_map,
+            "sample_qrs_tested":       sample_qrs,
+            "model_map_result":        model_map,
+            "raw_db_results":          raw_rows,
             "MODEL_NUMBER_TO_PRODUCT": MODEL_NUMBER_TO_PRODUCT,
-            "blade_rows_in_cache":  blade_count,
-            "spsf_rows_in_cache":   spsf_count,
-            "blade_station_ids":    blade_stations,
-            "odbc_driver":          _ODBC_DRIVER,
-            "db_name_qr":           DB_NAME_QR,
+            "blade_rows_in_cache":     blade_count,
+            "spsf_rows_in_cache":      spsf_count,
+            "blade_station_ids":       blade_stations,
+            "unique_qrs_in_diff_stations": diff_qr_count,
+            "odbc_driver":             _ODBC_DRIVER,
+            "db_name_qr":              DB_NAME_QR,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -36,9 +36,9 @@ MODEL_NUMBER_TO_PRODUCT = {
     "GBP-3003": "Blade",
 }
 
-# Todas las estaciones de SPSF/Blade prueban componentes que pueden ir a cualquier producto.
-# Todos sus registros se duplican — aparecen en ambos productos.
-UNDIFF_STATIONS = set(_SPSF_STATIONS)
+# Estaciones compartidas SPSF/Blade que NO pueden diferenciarse por modelNumber.
+# Sus registros aparecerán duplicados en ambos productos.
+UNDIFF_STATIONS = {406, 393}
 
 # Constantes de comportamiento del dashboard
 HISTORICAL_LOAD_DAYS = 31
@@ -64,9 +64,10 @@ GROUPS = {
     "Opal 4":      [289,290,291,292,293,294,295],
 }
 
-# Todas las estaciones de SPSF/Blade son compartidas y no diferenciables
+# Estaciones que SPSF y Blade comparten (incluyendo las no-diferenciables)
 SPSF_BLADE_STATIONS      = set(_SPSF_STATIONS)
-SPSF_BLADE_DIFF_STATIONS = set()  # ninguna estacion es diferenciable por modelNumber
+# Estaciones donde SI podemos resolver el producto via modelNumber
+SPSF_BLADE_DIFF_STATIONS = SPSF_BLADE_STATIONS - UNDIFF_STATIONS
 
 # STATION_TO_GROUP: primer grupo que registra la estacion gana (SPSF para estaciones compartidas).
 # Para las estaciones compartidas, prepare_dataframe sobreescribe con el valor de modelNumber.
@@ -233,75 +234,56 @@ GLOBAL_CACHE = {
     "last_updated": None
 }
 
-def _get_odbc_driver():
-    """Detecta el driver ODBC de SQL Server disponible. Prefiere 18, cae a 17."""
-    available = pyodbc.drivers()
-    for preferred in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server"):
-        if preferred in available:
-            print(f" [DB] Usando driver: {preferred}")
-            return preferred
-    # Ultimo recurso: cualquier driver de SQL Server disponible
-    for d in available:
-        if "SQL Server" in d:
-            print(f" [DB] Usando driver (fallback): {d}")
-            return d
-    raise RuntimeError(f"No se encontro ningun driver ODBC de SQL Server. Disponibles: {available}")
-
-_ODBC_DRIVER = _get_odbc_driver()
-
 def connect():
     conn_str = (
-        f"DRIVER={{{_ODBC_DRIVER}}};"
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
         f"SERVER={DB_SERVER};"
         f"DATABASE={DB_NAME};"
         f"UID={DB_USER};"
         f"PWD={DB_PASS};"
-        f"Encrypt=yes;TrustServerCertificate=yes;"
+        f"Encrypt=yes;TrustServerCertificate=no;"
     )
     return pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT_SECONDS)
 
 def connect_qr():
     """Conexion a la BD de tracking de QR (trkprdshipapp)."""
     conn_str = (
-        f"DRIVER={{{_ODBC_DRIVER}}};"
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
         f"SERVER={DB_SERVER};"
         f"DATABASE={DB_NAME_QR};"
         f"UID={DB_USER};"
         f"PWD={DB_PASS};"
-        f"Encrypt=yes;TrustServerCertificate=yes;"
+        f"Encrypt=yes;TrustServerCertificate=no;"
     )
     return pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT_SECONDS)
 
 def lookup_model_numbers(qr_codes):
     """
-    Consulta trkprdshipapp.trk.qrmac_db usando la conexion principal con nombre
-    de 3 partes (cross-database query). Evita abrir una segunda conexion.
-    Devuelve {qrcode: modelNumber}. Si falla, devuelve {} y el fallback es "SPSF".
+    Consulta trkprdshipapp.trk.qrmac_db y devuelve {qrcode: modelNumber}
+    para los QR codes proporcionados. Usa parametros seguros en lotes de 500.
+    Si falla la conexion, devuelve {} y los registros quedan en "SPSF" (fallback).
     """
     unique_qrs = [
         str(q) for q in qr_codes
         if q and str(q) not in ("nan", "None", "")
     ]
     if not unique_qrs:
-        print("[BLADE] lookup_model_numbers: sin QRs que consultar.")
         return {}
 
-    print(f"[BLADE] Consultando modelNumber para {len(unique_qrs)} QRs en {DB_NAME_QR}...")
     result = {}
     batch_size = 500
     try:
-        conn = connect()
+        conn = connect_qr()
         for i in range(0, len(unique_qrs), batch_size):
             chunk = unique_qrs[i : i + batch_size]
             placeholders = ",".join("?" for _ in chunk)
-            sql = f"SELECT qrcode, modelNumber FROM {DB_NAME_QR}.trk.qrmac_db WHERE qrcode IN ({placeholders})"
+            sql = f"SELECT qrcode, modelNumber FROM trk.qrmac_db WHERE qrcode IN ({placeholders})"
             for row in conn.execute(sql, chunk).fetchall():
                 if row[1] is not None:
                     result[str(row[0])] = str(row[1]).strip()
         conn.close()
-        print(f"[BLADE] lookup OK: {len(result)} QRs con modelNumber encontrados.")
     except Exception as e:
-        print(f"[BLADE] ERROR en lookup_model_numbers: {type(e).__name__}: {e}")
+        print(f"[WARNING] lookup_model_numbers: no se pudo consultar {DB_NAME_QR}: {e}")
 
     return result
 
@@ -315,15 +297,29 @@ def prepare_dataframe(df):
     # Asignacion inicial por estacion (comportamiento base para productos no-compartidos)
     df["producto"] = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
 
-    # ── Estaciones compartidas SPSF/Blade: duplicar todas las filas ────────
-    # Todas las estaciones prueban componentes sin producto asignado,
-    # por lo que cada registro aparece en ambos productos.
+    # ── Resolver SPSF vs Blade para estaciones compartidas ──────────────────
     shared_mask = df["stationid"].isin(SPSF_BLADE_STATIONS)
     if shared_mask.any():
-        df.loc[shared_mask, "producto"] = "SPSF"
-        blade_rows = df.loc[shared_mask].copy()
-        blade_rows["producto"] = "Blade"
-        df = pd.concat([df, blade_rows], ignore_index=True)
+        # Consultar modelNumber en trkprdshipapp para todos los QR's involucrados
+        shared_qrs = df.loc[shared_mask, "currQr"].dropna().unique().tolist()
+        model_map  = lookup_model_numbers(shared_qrs)
+
+        # Estaciones diferenciables: sobreescribir producto por modelNumber
+        # Fallback a "SPSF" si el QR no existe en trkprdshipapp o el modelNumber es desconocido
+        diff_mask = shared_mask & df["stationid"].isin(SPSF_BLADE_DIFF_STATIONS)
+        if diff_mask.any():
+            df.loc[diff_mask, "producto"] = df.loc[diff_mask, "currQr"].map(
+                lambda qr: MODEL_NUMBER_TO_PRODUCT.get(model_map.get(str(qr), ""), "SPSF")
+            )
+
+        # Estaciones NO diferenciables (406, 393):
+        # Duplicar filas → original queda como "SPSF", copia queda como "Blade"
+        undiff_mask = shared_mask & df["stationid"].isin(UNDIFF_STATIONS)
+        if undiff_mask.any():
+            df.loc[undiff_mask, "producto"] = "SPSF"
+            blade_rows = df.loc[undiff_mask].copy()
+            blade_rows["producto"] = "Blade"
+            df = pd.concat([df, blade_rows], ignore_index=True)
 
     # Pre-calcular tipo de falla una sola vez
     df["tipoFalla"] = df.apply(
@@ -618,69 +614,6 @@ def api_debug(grupo):
             for r in rows
         ]
         return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/debug_blade")
-def api_debug_blade():
-    """
-    Diagnostico especifico para el split SPSF/Blade.
-    Acepta ?qr=F0-XXXXX para probar un QR especifico.
-    Sin parametro, busca QRs de estaciones diff que SI esten en trkprdshippapp.
-    Ejemplo: /api/debug_blade?qr=F0-190526-M20046
-    """
-    try:
-        df = GLOBAL_CACHE["df"]
-        if df.empty:
-            return jsonify({"error": "Cache vacio, espera a que cargue"}), 503
-
-        qr_param = request.args.get("qr", "").strip()
-
-        if qr_param:
-            sample_qrs = [qr_param]
-        else:
-            # Tomar QRs SOLO de estaciones diferenciables (no undiff)
-            diff_df = df[df["stationid"].isin(SPSF_BLADE_DIFF_STATIONS)].copy()
-            sample_qrs = diff_df["currQr"].dropna().unique()[:10].tolist()
-
-        model_map = lookup_model_numbers(sample_qrs)
-
-        # Query directo para ver exactamente que devuelve la BD
-        raw_rows = []
-        try:
-            conn = connect()
-            for qr in sample_qrs[:5]:
-                rows = conn.execute(
-                    f"SELECT TOP 1 qrcode, modelNumber FROM {DB_NAME_QR}.trk.qrmac_db WHERE qrcode = ?",
-                    [qr]
-                ).fetchall()
-                raw_rows.append({
-                    "qr": qr,
-                    "found": len(rows) > 0,
-                    "modelNumber": rows[0][1] if rows else None
-                })
-            conn.close()
-        except Exception as e:
-            raw_rows = [{"error": str(e)}]
-
-        blade_count    = int((df["producto"] == "Blade").sum())
-        spsf_count     = int((df["producto"] == "SPSF").sum())
-        blade_stations = sorted(df[df["producto"] == "Blade"]["stationid"].unique().tolist())
-        diff_qr_count  = int(df[df["stationid"].isin(SPSF_BLADE_DIFF_STATIONS)]["currQr"].nunique())
-
-        return jsonify({
-            "sample_qrs_tested":       sample_qrs,
-            "model_map_result":        model_map,
-            "raw_db_results":          raw_rows,
-            "MODEL_NUMBER_TO_PRODUCT": MODEL_NUMBER_TO_PRODUCT,
-            "blade_rows_in_cache":     blade_count,
-            "spsf_rows_in_cache":      spsf_count,
-            "blade_station_ids":       blade_stations,
-            "unique_qrs_in_diff_stations": diff_qr_count,
-            "odbc_driver":             _ODBC_DRIVER,
-            "db_name_qr":              DB_NAME_QR,
-        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=Manufacturing Monitor Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/MonitorWebPage
+ExecStart=/home/pi/MonitorWebPage/venv/bin/python app.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

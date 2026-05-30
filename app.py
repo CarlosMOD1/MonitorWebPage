@@ -24,10 +24,21 @@ app = Flask(__name__, static_folder="static")
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACION
 # ─────────────────────────────────────────────────────────────
-DB_SERVER = os.getenv("DB_SERVER")
-DB_NAME   = os.getenv("DB_NAME")
-DB_USER   = os.getenv("DB_USER")
-DB_PASS   = os.getenv("DB_PASS")
+DB_SERVER  = os.getenv("DB_SERVER")
+DB_NAME    = os.getenv("DB_NAME")
+DB_USER    = os.getenv("DB_USER")
+DB_PASS    = os.getenv("DB_PASS")
+DB_NAME_QR = "trkprdshippapp"   # Base de datos de tracking de QR/modelNumber
+
+# Mapeo de modelNumber → producto. Agregar nuevos modelos aqui.
+MODEL_NUMBER_TO_PRODUCT = {
+    "GBP-3001": "SPSF",
+    "GBP-3003": "Blade",
+}
+
+# Estaciones compartidas SPSF/Blade que NO pueden diferenciarse por modelNumber.
+# Sus registros aparecerán duplicados en ambos productos.
+UNDIFF_STATIONS = {406, 393}
 
 # Constantes de comportamiento del dashboard
 HISTORICAL_LOAD_DAYS = 31
@@ -40,8 +51,11 @@ DETAILS_MAX_RECORDS = 500
 DB_CONNECT_TIMEOUT_SECONDS = 60
 DEFAULT_APP_PORT = 5000
 
+_SPSF_STATIONS = [406,393,178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232]
+
 GROUPS = {
-    "SPSF":        [178,183,184,185,186,187,244,201,202,190,191,192,193,194,195,196,199,208,211,215,220,232],
+    "SPSF":        _SPSF_STATIONS,
+    "Blade":       _SPSF_STATIONS,   # comparte las mismas estaciones; se diferencia por modelNumber
     "C-Track":     [238,239,241,333],
     "Solar":       [279,275,277,278,279,280,281,284],
     "Black Box":   [203,204,233,237,245],
@@ -50,15 +64,31 @@ GROUPS = {
     "Opal 4":      [289,290,291,292,293,294,295],
 }
 
-STATION_TO_GROUP = {}
-ALL_STATION_IDS  = []
+# Estaciones que SPSF y Blade comparten (incluyendo las no-diferenciables)
+SPSF_BLADE_STATIONS      = set(_SPSF_STATIONS)
+# Estaciones donde SI podemos resolver el producto via modelNumber
+SPSF_BLADE_DIFF_STATIONS = SPSF_BLADE_STATIONS - UNDIFF_STATIONS
+
+# STATION_TO_GROUP: primer grupo que registra la estacion gana (SPSF para estaciones compartidas).
+# Para las estaciones compartidas, prepare_dataframe sobreescribe con el valor de modelNumber.
+STATION_TO_GROUP    = {}
+ALL_STATION_IDS_SET = set()
 for grp, ids in GROUPS.items():
     for sid in ids:
-        STATION_TO_GROUP[sid] = grp
-        ALL_STATION_IDS.append(sid)
+        if sid not in STATION_TO_GROUP:   # first-assignment-wins → SPSF gana sobre Blade
+            STATION_TO_GROUP[sid] = grp
+        ALL_STATION_IDS_SET.add(sid)
 
+ALL_STATION_IDS = list(ALL_STATION_IDS_SET)
 IDS_STR = ",".join(str(s) for s in ALL_STATION_IDS)
 GROUP_NAMES = list(GROUPS.keys())
+
+# Orden de estaciones por producto: (producto, stationid) → posicion en la lista hardcodeada.
+# Usado en compute_stats para que el sidebar respete el orden definido arriba.
+STATION_ORDER = {}
+for grp, ids in GROUPS.items():
+    for pos, sid in enumerate(ids):
+        STATION_ORDER[(grp, sid)] = pos
 
 SQL = f"""
 SELECT
@@ -215,15 +245,83 @@ def connect():
     )
     return pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT_SECONDS)
 
+def connect_qr():
+    """Conexion a la BD de tracking de QR (trkprdshipapp)."""
+    conn_str = (
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"SERVER={DB_SERVER};"
+        f"DATABASE={DB_NAME_QR};"
+        f"UID={DB_USER};"
+        f"PWD={DB_PASS};"
+        f"Encrypt=yes;TrustServerCertificate=no;"
+    )
+    return pyodbc.connect(conn_str, timeout=DB_CONNECT_TIMEOUT_SECONDS)
+
+def lookup_model_numbers(qr_codes):
+    """
+    Consulta trkprdshipapp.trk.qrmac_db y devuelve {qrcode: modelNumber}
+    para los QR codes proporcionados. Usa parametros seguros en lotes de 500.
+    Si falla la conexion, devuelve {} y los registros quedan en "SPSF" (fallback).
+    """
+    unique_qrs = [
+        str(q) for q in qr_codes
+        if q and str(q) not in ("nan", "None", "")
+    ]
+    if not unique_qrs:
+        return {}
+
+    result = {}
+    batch_size = 500
+    try:
+        conn = connect_qr()
+        for i in range(0, len(unique_qrs), batch_size):
+            chunk = unique_qrs[i : i + batch_size]
+            placeholders = ",".join("?" for _ in chunk)
+            sql = f"SELECT qrcode, modelNumber FROM trk.qrmac_db WHERE qrcode IN ({placeholders})"
+            for row in conn.execute(sql, chunk).fetchall():
+                if row[1] is not None:
+                    result[str(row[0])] = str(row[1]).strip()
+        conn.close()
+    except Exception as e:
+        print(f"[WARNING] lookup_model_numbers: no se pudo consultar {DB_NAME_QR}: {e}")
+
+    return result
+
 def prepare_dataframe(df):
     """Pre-calcula columnas pesadas para evitar demoras en los endpoints."""
     if df.empty:
         return df
     if not pd.api.types.is_datetime64_any_dtype(df['endtime']):
         df['endtime'] = pd.to_datetime(df['endtime'])
-    
-    # Pre-calcular producto y tipo de falla una sola vez
-    df["producto"]  = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
+
+    # Asignacion inicial por estacion (comportamiento base para productos no-compartidos)
+    df["producto"] = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
+
+    # ── Resolver SPSF vs Blade para estaciones compartidas ──────────────────
+    shared_mask = df["stationid"].isin(SPSF_BLADE_STATIONS)
+    if shared_mask.any():
+        # Consultar modelNumber en trkprdshipapp para todos los QR's involucrados
+        shared_qrs = df.loc[shared_mask, "currQr"].dropna().unique().tolist()
+        model_map  = lookup_model_numbers(shared_qrs)
+
+        # Estaciones diferenciables: sobreescribir producto por modelNumber
+        # Fallback a "SPSF" si el QR no existe en trkprdshipapp o el modelNumber es desconocido
+        diff_mask = shared_mask & df["stationid"].isin(SPSF_BLADE_DIFF_STATIONS)
+        if diff_mask.any():
+            df.loc[diff_mask, "producto"] = df.loc[diff_mask, "currQr"].map(
+                lambda qr: MODEL_NUMBER_TO_PRODUCT.get(model_map.get(str(qr), ""), "SPSF")
+            )
+
+        # Estaciones NO diferenciables (406, 393):
+        # Duplicar filas → original queda como "SPSF", copia queda como "Blade"
+        undiff_mask = shared_mask & df["stationid"].isin(UNDIFF_STATIONS)
+        if undiff_mask.any():
+            df.loc[undiff_mask, "producto"] = "SPSF"
+            blade_rows = df.loc[undiff_mask].copy()
+            blade_rows["producto"] = "Blade"
+            df = pd.concat([df, blade_rows], ignore_index=True)
+
+    # Pre-calcular tipo de falla una sola vez
     df["tipoFalla"] = df.apply(
         lambda r: extract_tipo_falla(r["failureCode"], r["notes"], r["stationName"], r["producto"]), axis=1
     )
@@ -349,7 +447,7 @@ def compute_stats(df, date_from, date_to, real_failures=False):
     for (sid, sname, prod), grp in data_stat.groupby(["stationid", "stationName", "producto"]):
         k = kpis(grp)
         stations.append({"id": int(sid), "name": sname, "producto": prod, **k})
-    stations.sort(key=lambda x: x["failed"], reverse=True)
+    stations.sort(key=lambda x: STATION_ORDER.get((x["producto"], x["id"]), 9999))
 
     # Data de fail modes: scopeados por estación, producto y Falla
     if real_failures:
@@ -415,8 +513,7 @@ def api_monitor_data():
         
         # Filter by product if specified
         if product_filter != "all" and product_filter in GROUPS:
-            group_ids = GROUPS[product_filter]
-            df_day = df_day[df_day['stationid'].isin(group_ids)]
+            df_day = df_day[df_day['producto'] == product_filter]
         
         if df_day.empty:
             return jsonify({"date": target_date_str, "product": product_filter, "data": {}})
@@ -517,6 +614,75 @@ def api_debug(grupo):
             for r in rows
         ]
         return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/debug_station/<int:sid>")
+def api_debug_station(sid):
+    """
+    Diagnostico para una estacion especifica.
+    Consulta la BD directamente sin filtro de fecha para revelar si hay datos
+    y cuando fue el ultimo registro. Util para estaciones que no aparecen en el dashboard.
+    Ejemplo: /api/debug_station/406
+    """
+    sql = """
+        SELECT TOP 10
+            e.endtime,
+            s.stationName,
+            c.currQr,
+            c.prevQr,
+            e.failureCode,
+            CASE
+                WHEN e.failureCode LIKE 'ALL-PASS%'   THEN 'PASSED'
+                WHEN e.failureCode LIKE '%-PASS-%'    THEN 'PASSED'
+                WHEN e.failureCode = 'MAXPASSEXCEEDED' THEN 'PASSED'
+                ELSE 'FAILED'
+            END AS resultado
+        FROM trk.manufacturingEvents AS e
+        INNER JOIN trk.qrCorrelation AS c ON e.correlationID = c.correlationID
+        INNER JOIN trk.stationConfig  AS s ON e.stationid    = s.stationid
+        WHERE s.stationid = ?
+        ORDER BY e.endtime DESC
+    """
+    try:
+        conn = connect()
+        rows = conn.execute(sql, [sid]).fetchall()
+        conn.close()
+
+        if not rows:
+            return jsonify({
+                "stationid": sid,
+                "warning": "Sin registros en la BD (con INNER JOIN qrCorrelation). "
+                           "Puede que los eventos de esta estacion no tengan correlationID valido.",
+                "records": []
+            })
+
+        days_since_last = (datetime.now() - rows[0][0]).days if rows[0][0] else None
+        in_cache = days_since_last is not None and days_since_last <= HISTORICAL_LOAD_DAYS
+
+        records = [
+            {
+                "endtime":     r[0].strftime("%Y-%m-%d %H:%M") if r[0] else None,
+                "stationName": r[1],
+                "currQr":      str(r[2]) if r[2] is not None else "NULL",
+                "prevQr":      str(r[3]) if r[3] is not None else "NULL",
+                "failureCode": r[4],
+                "resultado":   r[5],
+            }
+            for r in rows
+        ]
+        return jsonify({
+            "stationid":       sid,
+            "days_since_last": days_since_last,
+            "in_cache_window": in_cache,
+            "cache_window_days": HISTORICAL_LOAD_DAYS,
+            "diagnosis": (
+                "OK - datos dentro del rango del cache" if in_cache
+                else f"FUERA DEL CACHE: ultimo registro hace {days_since_last} dias, pero HISTORICAL_LOAD_DAYS={HISTORICAL_LOAD_DAYS}"
+            ),
+            "records": records,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

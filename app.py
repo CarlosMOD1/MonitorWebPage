@@ -284,8 +284,10 @@ def lookup_model_numbers(qr_codes):
         if q and str(q) not in ("nan", "None", "")
     ]
     if not unique_qrs:
+        print("[BLADE] lookup_model_numbers: sin QRs que consultar.")
         return {}
 
+    print(f"[BLADE] Consultando modelNumber para {len(unique_qrs)} QRs en {DB_NAME_QR}...")
     result = {}
     batch_size = 500
     try:
@@ -298,8 +300,9 @@ def lookup_model_numbers(qr_codes):
                 if row[1] is not None:
                     result[str(row[0])] = str(row[1]).strip()
         conn.close()
+        print(f"[BLADE] lookup OK: {len(result)} QRs con modelNumber encontrados.")
     except Exception as e:
-        print(f"[WARNING] lookup_model_numbers: fallo cross-DB query a {DB_NAME_QR}: {e}")
+        print(f"[BLADE] ERROR en lookup_model_numbers: {type(e).__name__}: {e}")
 
     return result
 
@@ -630,6 +633,41 @@ def api_debug(grupo):
             for r in rows
         ]
         return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/debug_blade")
+def api_debug_blade():
+    """
+    Diagnostico especifico para el split SPSF/Blade.
+    Toma los primeros 5 QRs de estaciones compartidas del cache y prueba el lookup.
+    Ejemplo: /api/debug_blade
+    """
+    try:
+        df = GLOBAL_CACHE["df"]
+        if df.empty:
+            return jsonify({"error": "Cache vacio, espera a que cargue"}), 503
+
+        shared = df[df["stationid"].isin(SPSF_BLADE_STATIONS)].copy()
+        sample_qrs = shared["currQr"].dropna().unique()[:5].tolist()
+
+        model_map = lookup_model_numbers(sample_qrs)
+
+        blade_count = int((df["producto"] == "Blade").sum())
+        spsf_count  = int((df["producto"] == "SPSF").sum())
+        blade_stations = sorted(df[df["producto"] == "Blade"]["stationid"].unique().tolist())
+
+        return jsonify({
+            "sample_qrs_tested":    sample_qrs,
+            "model_map_result":     model_map,
+            "MODEL_NUMBER_TO_PRODUCT": MODEL_NUMBER_TO_PRODUCT,
+            "blade_rows_in_cache":  blade_count,
+            "spsf_rows_in_cache":   spsf_count,
+            "blade_station_ids":    blade_stations,
+            "odbc_driver":          _ODBC_DRIVER,
+            "db_name_qr":           DB_NAME_QR,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

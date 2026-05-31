@@ -234,9 +234,17 @@ GLOBAL_CACHE = {
     "last_updated": None
 }
 
+def _get_odbc_driver():
+    """Detecta automaticamente ODBC Driver 17 o 18 segun lo que este instalado."""
+    drivers = pyodbc.drivers()
+    for drv in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server"):
+        if drv in drivers:
+            return drv
+    return "ODBC Driver 17 for SQL Server"  # fallback
+
 def connect():
     conn_str = (
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"DRIVER={{{_get_odbc_driver()}}};"
         f"SERVER={DB_SERVER};"
         f"DATABASE={DB_NAME};"
         f"UID={DB_USER};"
@@ -248,7 +256,7 @@ def connect():
 def connect_qr():
     """Conexion a la BD de tracking de QR (trkprdshipapp)."""
     conn_str = (
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"DRIVER={{{_get_odbc_driver()}}};"
         f"SERVER={DB_SERVER};"
         f"DATABASE={DB_NAME_QR};"
         f"UID={DB_USER};"

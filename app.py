@@ -44,7 +44,7 @@ UNDIFF_STATIONS = {406, 393}
 HISTORICAL_LOAD_DAYS = 31
 RECENT_REFRESH_DAYS = 2
 REFRESH_INTERVAL_MINUTES = 15
-REAL_FAILURE_HOURS = 3
+REAL_FAILURE_HOURS = 1
 DEFAULT_QUERY_RANGE_DAYS = 30
 DEBUG_ENDPOINT_RANGE_DAYS = 7
 DETAILS_MAX_RECORDS = 500
@@ -151,6 +151,24 @@ def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
 
         if '"fail_tests": ["Sleep Current", "Non_FEM Current", "FEM Current"]' in ns:
             return "No current measured"
+
+        # ── Estacion 406: "Test failed: <Componente> (<Detalle>)" ──────────
+        # Ejemplos: "Test failed: Cellular (NOT_REGISTERED_CGREG)"
+        #           "Test failed: USB Spec (Missing: Cellular Modem (Quectel EC25) [2c7c:0125])"
+        #           "Test failed: GPS Test (Sats: 3, Fix: True)"
+        if ns.startswith("Test failed: "):
+            content = ns[len("Test failed: "):].strip()
+            # GPS Test: el conteo de satelites varia, solo nos interesa el componente
+            if content.startswith("GPS Test"):
+                return "GPS Test"
+            # USB Spec: quitar marcas comerciales (Brand) y USB IDs [vid:pid]
+            if content.startswith("USB Spec"):
+                cleaned = re.sub(r'\s*\([A-Za-z0-9][\w\s\-/]*\)', '', content)  # strip (BrandName)
+                cleaned = re.sub(r'\s*\[[0-9a-fA-F:]+\]', '', cleaned)           # strip [vid:pid]
+                cleaned = re.sub(r',\s*\)', ')', cleaned).strip()                 # clean trailing comma
+                return cleaned
+            # Cellular, Buzzer, HMI LED, PIR Sensor, Device Files, etc. → devolver tal cual
+            return content
 
         # ── Búsqueda de cadena estilo fórmula Excel ────────────
         # Igual que: MID(I2, FIND("""fail_tests"": [""", I2)+16, FIND(...)-(FIND(...)+16))

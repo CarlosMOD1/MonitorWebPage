@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""
+processing.py — Procesamiento de DataFrames, carga de datos y calculo de KPIs.
+
+Responsabilidades:
+  - extract_tipo_falla(): clasifica el tipo de falla a partir de failureCode + notes
+  - prepare_dataframe():  enriquece el DataFrame con columnas 'producto' y 'tipoFalla'
+  - load_historical_data(): carga inicial desde la BD al arrancar
+  - background_update_worker(): hilo que refresca datos cada N minutos
+  - compute_stats(): calcula KPIs por producto, estacion y modos de falla
+"""
+
+import json
+import re
+import threading
+import time
+
+import pandas as pd
+from datetime import datetime, timedelta
+
+from config import (
+    SQL,
+    HISTORICAL_LOAD_DAYS, RECENT_REFRESH_DAYS, REFRESH_INTERVAL_MINUTES,
+    REAL_FAILURE_HOURS,
+    SPSF_BLADE_STATIONS, SPSF_BLADE_DIFF_STATIONS, UNDIFF_STATIONS,
+    MODEL_NUMBER_TO_PRODUCT, STATION_TO_GROUP, STATION_ORDER,
+    CODE_RE, METADATA_RE, GROUP_NAMES,
+)
+from db import connect, lookup_model_numbers
+
+# ─────────────────────────────────────────────────────────────
+# CACHE GLOBAL EN RAM
+# ─────────────────────────────────────────────────────────────
+GLOBAL_CACHE = {
+    "df":           pd.DataFrame(),
+    "last_updated": None,
+}
+
+
+# ─────────────────────────────────────────────────────────────
+# EXTRACCION DE TIPO DE FALLA
+# Logica basada en los archivos Excel de referencia por producto.
+# ─────────────────────────────────────────────────────────────
+
+def _clean_falla_text(text):
+    """Elimina detalles especificos de dispositivo entre parentesis/corchetes."""
+    text = re.split(r'[\(\[]', text)[0].strip().rstrip(',').strip()
+    return text
+
+
+def _extract_station406(ns):
+    """
+    Estacion 406: notas con formato 'Test failed: <Componente> (<Detalle>)'.
+    Ejemplos:
+      'Test failed: Cellular (NOT_REGISTERED_CGREG)'   → 'Cellular (NOT_REGISTERED_CGREG)'
+      'Test failed: GPS Test (Sats: 3, Fix: True)'     → 'GPS Test'
+      'Test failed: USB Spec (Missing: Modem [vid:pid])' → 'USB Spec (Missing: Modem)'
+    Retorna None si el formato no coincide.
+    """
+    if not ns.startswith("Test failed: "):
+        return None
+    content = ns[len("Test failed: "):].strip()
+    if content.startswith("GPS Test"):
+        return "GPS Test"
+    if content.startswith("USB Spec"):
+        cleaned = re.sub(r'\s*\([A-Za-z0-9][\w\s\-/]*\)', '', content)
+        cleaned = re.sub(r'\s*\[[0-9a-fA-F:]+\]', '', cleaned)
+        cleaned = re.sub(r',\s*\)', ')', cleaned).strip()
+        return cleaned
+    return content
+
+
+def _extract_fail_tests_marker(ns):
+    """
+    Busca el marcador '"fail_tests": [" (con variantes compactas) en texto plano/JSON
+    y extrae el primer elemento de la lista.
+    Equivale a la formula Excel: MID(I2, FIND(...)+16, FIND(...)-...).
+    Retorna None si no encuentra el marcador.
+    """
+    for marker in ('"fail_tests": ["', '"fail_tests":["', '"failed": ["', '"failed":["'):
+        idx = ns.find(marker)
+        if idx >= 0:
+            start = idx + len(marker)
+            end   = ns.find('"', start)
+            if end > start:
+                val = _clean_falla_text(ns[start:end].strip())
+                if val:
+                    return val
+    return None
+
+
+def _extract_from_json(ns, station):
+    """
+    Parsea notas JSON y extrae el tipo de falla segun el esquema del grupo:
+      - OPAL4:     wrapper {"notes": {"failure_codes": [...]}}
+      - BlackBox2: {"station": "... - RF Chamber BLE Test"}
+      - Generico:  {"failure_codes": [...]}
+    Retorna None si la cadena no empieza con '{' o no hay coincidencia util.
+    """
+    if not ns.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(ns)
+
+        # OPAL4: wrapper {"notes": {...}}
+        if "notes" in parsed and isinstance(parsed["notes"], dict):
+            inner   = parsed["notes"]
+            fc_list = inner.get("failure_codes", [])
+            fc0     = str(fc_list[0]).strip() if fc_list else ""
+            return fc0 if (fc0 and not CODE_RE.match(fc0)) else station
+
+        # BlackBox2 RF Chamber: {"station": "Rack 1 - RF Chamber BLE Test"}
+        if "station" in parsed:
+            parts = str(parsed["station"]).split(" - ")
+            return parts[-1].strip() if len(parts) > 1 else parts[0].strip()
+
+        # failure_codes[0] como ultimo recurso JSON
+        fc_list = parsed.get("failure_codes", [])
+        if fc_list:
+            return str(fc_list[0]).strip()
+
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+def _extract_from_plain_text(ns, station, producto, fc):
+    """
+    Extrae tipo de falla de notas en texto plano (fallback final).
+    Logica diferenciada por producto (Black Box vs resto).
+    Retorna None si no puede extraer algo significativo.
+    """
+    # Solar Panel Test: 'FAIL - V:2.349V I:0.915A P:2.149W' → nombre de estacion
+    if ns.startswith("FAIL - "):
+        return station if station else fc
+
+    # Black Box: 'MAC, Sleep Current | sleep: 0.53 | bat: 3.1'
+    if "Black Box" in producto:
+        left   = ns.split(" | ")[0].strip()
+        first  = left.split(",")[0].strip()
+        result = _clean_falla_text(first.split(":")[0].strip())
+        if result and not METADATA_RE.match(result):
+            return result
+
+    # SPSF y otros: primera linea no vacia → split por ' | ' → split por ':'
+    lines = [
+        ln.strip() for ln in ns.replace("\r", "\n").split("\n")
+        if ln.strip() and ln.strip().lower() not in ("undefined", "fail")
+    ]
+    if lines:
+        segment = lines[0].split(" | ")[0].strip()
+        result  = _clean_falla_text(segment.split(":")[0].strip())
+        if result and not METADATA_RE.match(result):
+            return result
+
+    return None
+
+
+def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
+    """
+    Determina el tipo de falla legible a partir de failureCode y notes.
+
+    Orden de prioridad:
+      1. Codigos de pase (ALL-PASS, -PASS-, MAXPASSEXCEEDED)  → devuelve el failureCode
+      2. C-Track (prefijo CT-)                                 → devuelve el failureCode
+      3. Caso especial de corriente conocido
+      4. Estacion 406 ('Test failed: ...')
+      5. Marcador fail_tests en texto/JSON
+      6. JSON estructurado (OPAL4, BlackBox2, generico)
+      7. Texto plano (Solar, Black Box, SPSF/otros)
+      8. failureCode como ultimo recurso
+    """
+    fc      = str(failure_code).strip() if failure_code and str(failure_code) not in ("nan", "None") else ""
+    station = str(station_name).strip() if station_name and str(station_name) not in ("nan", "None") else ""
+    ns      = str(notes_raw).strip()    if notes_raw    and str(notes_raw)    not in ("nan", "None", "") else ""
+
+    # 1. Codigos de pase
+    if "ALL-PASS" in fc or "-PASS-" in fc or fc == "MAXPASSEXCEEDED":
+        return fc
+
+    # 2. C-Track (descriptivos por si solos)
+    if fc.startswith("CT-"):
+        return fc
+
+    if ns and ns != "undefined":
+
+        # 3. Caso especial de corriente (texto exacto conocido)
+        if '"fail_tests": ["Sleep Current", "Non_FEM Current", "FEM Current"]' in ns:
+            return "No current measured"
+
+        # 4. Estacion 406
+        result = _extract_station406(ns)
+        if result:
+            return result
+
+        # 5. Marcador fail_tests en texto
+        result = _extract_fail_tests_marker(ns)
+        if result:
+            return result
+
+        # 6. JSON estructurado
+        result = _extract_from_json(ns, station)
+        if result:
+            return result
+
+        # 7. Texto plano
+        result = _extract_from_plain_text(ns, station, producto, fc)
+        if result:
+            return result
+
+    # 8. Ultimo recurso
+    return fc
+
+
+# ─────────────────────────────────────────────────────────────
+# PREPARACION DEL DATAFRAME
+# ─────────────────────────────────────────────────────────────
+
+def prepare_dataframe(df):
+    """
+    Enriquece el DataFrame con las columnas 'producto' y 'tipoFalla'.
+
+    Pasos:
+      1. Convertir endtime a datetime si hace falta
+      2. Asignar 'producto' por estacion (regla base)
+      3. Resolver SPSF vs Blade en estaciones compartidas via modelNumber
+         (QRs vacios/nulos quedan con fallback 'SPSF' y se muestran en el portal)
+      4. Duplicar filas en estaciones no-diferenciables (406, 393)
+      5. Pre-calcular 'tipoFalla' llamando a extract_tipo_falla
+    """
+    if df.empty:
+        return df
+
+    if not pd.api.types.is_datetime64_any_dtype(df["endtime"]):
+        df["endtime"] = pd.to_datetime(df["endtime"])
+
+    # Paso 2: asignacion inicial por estacion
+    df["producto"] = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
+
+    # Paso 3 y 4: resolver SPSF vs Blade
+    shared_mask = df["stationid"].isin(SPSF_BLADE_STATIONS)
+    if shared_mask.any():
+
+        # ── CONFIGURACIÓN ACTUAL ───────────────────────────────────────
+        # Se ignora el filtro por modelNumber y se duplican TODOS los
+        # registros de estaciones compartidas (SPSF y Blade) para que
+        # ambas pestañas muestren exactamente los mismos datos.
+        # (Esto incluye a las estaciones 406 y 393 por definición).
+        df.loc[shared_mask, "producto"] = "SPSF"
+        blade_rows = df.loc[shared_mask].copy()
+        blade_rows["producto"] = "Blade"
+        df = pd.concat([df, blade_rows], ignore_index=True)
+        # ───────────────────────────────────────────────────────────────
+
+        """
+        # --- CÓDIGO ORIGINAL (DESCOMENTAR PARA REVERTIR AL FILTRO POR MODELO) ---
+        # Consultar modelNumber para estaciones diferenciables.
+        # lookup_model_numbers ya ignora QRs vacios/nulos internamente.
+        shared_qrs = df.loc[shared_mask, "currQr"].dropna().unique().tolist()
+        model_map  = lookup_model_numbers(shared_qrs)
+
+        diff_mask = shared_mask & df["stationid"].isin(SPSF_BLADE_DIFF_STATIONS)
+        if diff_mask.any():
+            df.loc[diff_mask, "producto"] = df.loc[diff_mask, "currQr"].map(
+                lambda qr: MODEL_NUMBER_TO_PRODUCT.get(
+                    model_map.get(str(qr), ""), "SPSF"
+                )
+            )
+
+        # Estaciones NO diferenciables (406, 393): duplicar → SPSF + Blade
+        undiff_mask = shared_mask & df["stationid"].isin(UNDIFF_STATIONS)
+        if undiff_mask.any():
+            df.loc[undiff_mask, "producto"] = "SPSF"
+            blade_rows = df.loc[undiff_mask].copy()
+            blade_rows["producto"] = "Blade"
+            df = pd.concat([df, blade_rows], ignore_index=True)
+        # --------------------------------------------------------------------------
+        """
+
+    # Paso 5: pre-calcular tipo de falla (costoso; se hace una sola vez aqui)
+    df["tipoFalla"] = df.apply(
+        lambda r: extract_tipo_falla(
+            r["failureCode"], r["notes"], r["stationName"], r["producto"]
+        ),
+        axis=1,
+    )
+    return df
+
+
+# ─────────────────────────────────────────────────────────────
+# CARGA INICIAL Y ACTUALIZACION EN SEGUNDO PLANO
+# ─────────────────────────────────────────────────────────────
+
+def load_historical_data():
+    """Carga los ultimos HISTORICAL_LOAD_DAYS dias desde la BD al arrancar el servidor."""
+    print("[DATABASE] Iniciando carga de datos historicos...")
+    start_date = (datetime.now() - timedelta(days=HISTORICAL_LOAD_DAYS)).strftime("%Y-%m-%d")
+
+    conn = connect()
+    df   = pd.read_sql(SQL + f" AND e.endtime >= '{start_date}'", conn)
+    conn.close()
+
+    df = prepare_dataframe(df)
+
+    GLOBAL_CACHE["df"]           = df
+    GLOBAL_CACHE["last_updated"] = datetime.now()
+    print(f"[DATABASE] Carga inicial completa. {len(df)} registros en RAM.")
+
+
+def background_update_worker():
+    """
+    Hilo en segundo plano: cada REFRESH_INTERVAL_MINUTES minutos re-consulta
+    los ultimos RECENT_REFRESH_DAYS dias e inyecta los datos frescos al cache.
+    Esto evita recargar toda la historia en cada ciclo.
+    """
+    while True:
+        time.sleep(REFRESH_INTERVAL_MINUTES * 60)
+        try:
+            print("[BACKGROUND] Refrescando registros recientes de DB...")
+            cutoff_str = (datetime.now() - timedelta(days=RECENT_REFRESH_DAYS)).strftime("%Y-%m-%d")
+            cutoff_ts  = pd.to_datetime(cutoff_str)
+
+            conn      = connect()
+            df_recent = pd.read_sql(SQL + f" AND e.endtime >= '{cutoff_str}'", conn)
+            conn.close()
+
+            df_recent = prepare_dataframe(df_recent)
+
+            # Conservar datos anteriores al cutoff y unir con los frescos
+            old_data = GLOBAL_CACHE["df"]
+            old_data = old_data[old_data["endtime"] < cutoff_ts]
+            new_df   = pd.concat([old_data, df_recent], ignore_index=True)
+
+            GLOBAL_CACHE["df"]           = new_df
+            GLOBAL_CACHE["last_updated"] = datetime.now()
+            print(f"[BACKGROUND] Actualizacion completa. Total: {len(new_df)} registros en RAM.")
+
+        except Exception as exc:
+            print(f"[BACKGROUND] Error en hilo de actualizacion: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────
+# FILTROS Y CALCULO DE KPIs
+# ─────────────────────────────────────────────────────────────
+
+def filter_real_failures(df):
+    """
+    Retorna solo las 'fallas reales': el ultimo intento por QR es FAILED
+    y tiene mas de REAL_FAILURE_HOURS de antiguedad (unidad que no pudo ser
+    reprocesada en el turno).
+    """
+    if df.empty:
+        return df
+    cutoff      = datetime.now() - timedelta(hours=REAL_FAILURE_HOURS)
+    idx         = df.groupby("currQr")["endtime"].idxmax()
+    last_per_qr = df.loc[idx]
+    return last_per_qr[
+        (last_per_qr["resultado"] == "FAILED") &
+        (last_per_qr["endtime"] < cutoff)
+    ]
+
+
+def _kpis(data):
+    """
+    Calcula metricas basicas: total, passed, failed, yield%, fpy%.
+    FPY (First Pass Yield) cuenta los codigos con patron '-PASS-' en failureCode.
+    """
+    t  = len(data)
+    p  = int((data["resultado"] == "PASSED").sum())
+    f  = int((data["resultado"] == "FAILED").sum())
+    fp = int(data["failureCode"].str.contains(r".*-PASS-.*", na=False).sum())
+    return {
+        "total":  t,
+        "failed": f,
+        "passed": p,
+        "yield":  round(p / t * 100, 1) if t else 0,
+        "fpy":    round(fp / t * 100, 1) if t else 0,
+    }
+
+
+def _get_kpi_subset(data, group_cols, real_failures):
+    """
+    En modo real_failures: filtra al ultimo intento por QR y conserva
+    solo los que pasaron o fallaron hace mas de REAL_FAILURE_HOURS.
+    En modo normal: retorna el DataFrame sin modificar.
+    """
+    if not real_failures:
+        return data
+    cutoff = datetime.now() - timedelta(hours=REAL_FAILURE_HOURS)
+    key    = (group_cols + ["currQr"]) if group_cols else ["currQr"]
+    idx    = data.groupby(key)["endtime"].idxmax()
+    last   = data.loc[idx]
+    return last[
+        (last["resultado"] == "PASSED") |
+        ((last["resultado"] == "FAILED") & (last["endtime"] < cutoff))
+    ]
+
+
+def compute_stats(df, date_from, date_to, real_failures=False):
+    """
+    Calcula KPIs generales, por producto, por estacion y modos de falla.
+    Retorna un dict completamente serializable a JSON.
+    """
+    # KPIs globales
+    data_overall = _get_kpi_subset(df, [], real_failures)
+    overall      = _kpis(data_overall)
+    overall["dateFrom"] = date_from
+    overall["dateTo"]   = date_to
+
+    # KPIs por producto
+    data_prod  = _get_kpi_subset(df, ["producto"], real_failures)
+    by_product = {
+        prod: _kpis(grp)
+        for prod, grp in data_prod.groupby("producto")
+    }
+
+    # KPIs por estacion
+    data_stat = _get_kpi_subset(df, ["stationid", "stationName", "producto"], real_failures)
+    stations  = []
+    for (sid, sname, prod), grp in data_stat.groupby(["stationid", "stationName", "producto"]):
+        k = _kpis(grp)
+        stations.append({"id": int(sid), "name": sname, "producto": prod, **k})
+    stations.sort(key=lambda x: STATION_ORDER.get((x["producto"], x["id"]), 9999))
+
+    # Modos de falla
+    data_f = data_stat if real_failures else df
+    df_f   = data_f[
+        (data_f["resultado"] == "FAILED") &
+        (data_f["tipoFalla"] != "") &
+        data_f["tipoFalla"].notna()
+    ]
+    failures = []
+    for (sid, sname, prod, falla), grp in df_f.groupby(
+        ["stationid", "stationName", "producto", "tipoFalla"]
+    ):
+        failures.append({
+            "sid":      int(sid),
+            "sname":    sname,
+            "producto": prod,
+            "falla":    falla,
+            "qty":      len(grp),
+        })
+    failures.sort(key=lambda x: x["qty"], reverse=True)
+
+    return {
+        "overall":     overall,
+        "byProduct":   by_product,
+        "stations":    stations,
+        "failures":    failures[:300],
+        "groups":      GROUP_NAMES,
+        "lastUpdated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def compute_report_data(df, date_from_str, date_to_str):
+    """
+    Calcula metricas resumidas, series de tiempo y top de fallas
+    para el panel de reporte en la UI. Retorna un dict serializable a JSON.
+    """
+    if df.empty:
+        return {"empty": True}
+
+    total   = len(df)
+    passed  = int((df["resultado"] == "PASSED").sum())
+    failed  = int((df["resultado"] == "FAILED").sum())
+    yld_pct = round(passed / total * 100, 1) if total else 0.0
+    fpy_cnt = int(df["failureCode"].str.contains(r".*-PASS-.*", na=False).sum())
+    fpy_pct = round(fpy_cnt / total * 100, 1) if total else 0.0
+
+    # RTY (Rolled Throughput Yield): producto de los yields por estacion
+    rty_pct = None
+    st_groups = [(sid, g) for sid, g in df.groupby("stationid") if len(g) > 0]
+    if len(st_groups) > 1:
+        rty = 1.0
+        for _, g in st_groups:
+            rty *= int((g["resultado"] == "PASSED").sum()) / len(g)
+        rty_pct = round(rty * 100, 1)
+
+    # Series de tiempo — columnas sin guion bajo inicial para evitar problemas con itertuples
+    df2 = df.copy()
+    df2["period_d"] = df2["endtime"].dt.date.astype(str)
+    df2["period_w"] = df2["endtime"].dt.to_period("W").astype(str)
+    df2["period_m"] = df2["endtime"].dt.to_period("M").astype(str)
+
+    def _ts_agg(grp_col, limit):
+        agg = (
+            df2.groupby(grp_col)
+            .agg(
+                total  =("resultado", "count"),
+                passed =("resultado", lambda x: (x == "PASSED").sum()),
+            )
+            .reset_index()
+        )
+        agg["yield_pct"] = (
+            (agg["passed"] / agg["total"] * 100).round(1).where(agg["total"] > 0, 0)
+        )
+        agg = agg.tail(limit)
+        return {
+            "labels": agg[grp_col].astype(str).tolist(),
+            "yields": agg["yield_pct"].tolist(),
+            "totals": agg["total"].tolist(),
+        }
+
+    # Top failures
+    df_fail   = df[df["resultado"] == "FAILED"]
+    tot_fails = len(df_fail)
+    top_failures = []
+    if not df_fail.empty:
+        agg_f = (
+            df_fail.groupby(["tipoFalla", "stationName", "producto"])
+            .size()
+            .reset_index(name="count")
+            .sort_values("count", ascending=False)
+            .head(20)
+        )
+        for _, row in agg_f.iterrows():
+            top_failures.append({
+                "falla":    str(row["tipoFalla"]),
+                "station":  str(row["stationName"]),
+                "producto": str(row["producto"]),
+                "count":    int(row["count"]),
+                "pct":      round(row["count"] / tot_fails * 100, 1) if tot_fails else 0,
+            })
+
+    return {
+        "dateFrom":    date_from_str,
+        "dateTo":      date_to_str,
+        "summary": {
+            "total":     total,
+            "passed":    passed,
+            "failed":    failed,
+            "yield_pct": yld_pct,
+            "fpy_pct":   fpy_pct,
+            "rty_pct":   rty_pct,
+        },
+        "daily":   _ts_agg("period_d", 30),
+        "weekly":  _ts_agg("period_w", 12),
+        "monthly": _ts_agg("period_m", 12),
+        "topFailures": top_failures,
+    }

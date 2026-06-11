@@ -141,12 +141,32 @@ def api_data():
                     ((last["resultado"] == "FAILED") & (last["endtime"] < cutoff))
                 ]
 
-            def _pf_kpi(d):
+            def _pf_kpi(d, original_subset=None):
                 p = int((d["resultado"] == "PASSED").sum())
-                f = int((d["resultado"] == "FAILED").sum())
+                f_df = d[d["resultado"] == "FAILED"]
+                f = len(f_df)
                 t = p + f
-                return {"passed": p, "failed": f, "total": t,
-                        "yield": round(p / t * 100, 1) if t else 0}
+                
+                fail_bins = {"1": 0, "2": 0, "3plus": 0}
+                if not f_df.empty and original_subset is not None and not original_subset.empty:
+                    fails_only = original_subset[
+                        original_subset["currQr"].isin(f_df["currQr"]) & 
+                        (original_subset["resultado"] == "FAILED")
+                    ]
+                    counts = fails_only.groupby("currQr").size()
+                    for count in counts:
+                        if count == 1:
+                            fail_bins["1"] += 1
+                        elif count == 2:
+                            fail_bins["2"] += 1
+                        else:
+                            fail_bins["3plus"] += 1
+                            
+                return {
+                    "passed": p, "failed": f, "total": t,
+                    "yield": round(p / t * 100, 1) if t else 0,
+                    "failBins": fail_bins
+                }
 
             rel_overall      = _get_relevant(df_filtered, [])
             rel_product      = _get_relevant(df_filtered, ["producto"])
@@ -154,12 +174,17 @@ def api_data():
             rel_station_prod = _get_relevant(df_filtered, ["stationid", "producto"])
 
             pass_fail_pie = {
-                "overall":   _pf_kpi(rel_overall),
-                "byProduct": {p: _pf_kpi(g) for p, g in rel_product.groupby("producto")},
-                "byStation": {int(s): _pf_kpi(g) for s, g in rel_station.groupby("stationid")},
-                # Keyed "stationid_producto" — respects active product filter in the frontend
+                "overall":   _pf_kpi(rel_overall, df_filtered),
+                "byProduct": {
+                    p: _pf_kpi(g, df_filtered[df_filtered["producto"] == p]) 
+                    for p, g in rel_product.groupby("producto")
+                },
+                "byStation": {
+                    int(s): _pf_kpi(g, df_filtered[df_filtered["stationid"] == s]) 
+                    for s, g in rel_station.groupby("stationid")
+                },
                 "byStationProduct": {
-                    f"{int(s)}_{prod}": _pf_kpi(g)
+                    f"{int(s)}_{prod}": _pf_kpi(g, df_filtered[(df_filtered["stationid"] == s) & (df_filtered["producto"] == prod)])
                     for (s, prod), g in rel_station_prod.groupby(["stationid", "producto"])
                 },
             }
@@ -304,6 +329,7 @@ def api_failure_details():
             {
                 "prevQr":      str(r.get("prevQr", "") or ""),
                 "currQr":      str(r.get("currQr", "") or ""),
+                "endtime":     (r["endtime"].strftime("%Y-%m-%d %H:%M") if pd.notna(r.get("endtime")) else ""),
                 "tipoFalla":   str(r.get("tipoFalla", "")),
                 "failureCode": str(r.get("failureCode", "")),
                 "stationName": str(r.get("stationName", "")),
@@ -343,6 +369,29 @@ def api_passfail_details():
         sub = _filter_by_product(sub, product)
         sub = _filter_by_station(sub, station_id)
 
+        # Keep a copy prior to applying the real_failures/result filters
+        original_sub = sub.copy()
+
+        # Optional: filter by failure-count bin (1,2,3plus)
+        fail_bin = request.args.get("fail_bin", None)
+        qr_set = None
+        if fail_bin:
+            # Compute counts of FAILED rows per currQr within the selected scope
+            try:
+                counts = (
+                    original_sub[original_sub["resultado"] == "FAILED"]
+                    .dropna(subset=["currQr"])  # ignore missing QRs
+                    .groupby("currQr").size()
+                )
+                if fail_bin == "1":
+                    qr_set = counts[counts == 1].index.tolist()
+                elif fail_bin == "2":
+                    qr_set = counts[counts == 2].index.tolist()
+                elif fail_bin in ("3", "3plus", "3+"):
+                    qr_set = counts[counts >= 3].index.tolist()
+            except Exception:
+                qr_set = []
+
         if sub.empty:
             return jsonify([])
 
@@ -351,6 +400,10 @@ def api_passfail_details():
 
         if resultado:
             sub = sub[sub["resultado"] == resultado]
+
+        # If requested, keep only rows whose currQr belongs to the selected bin
+        if qr_set is not None:
+            sub = sub[sub["currQr"].isin(qr_set)]
 
         sub = sub.sort_values("endtime", ascending=False)
 

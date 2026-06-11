@@ -152,8 +152,10 @@ tbody tr:hover td{background:#1E3A5F}
         <table class="data-table" id="modalTable">
           <thead>
             <tr>
+              <th>#</th>
               <th>QR</th>
               <th>Station</th>
+              <th>Time</th>
               <th>Failure Type</th>
               <th>Failure Code</th>
               <th>Notes</th>
@@ -898,7 +900,12 @@ function renderPassFailPie() {
   const wrap = document.getElementById('passFailPieWrap');
   const pf = getPassFailData();
   const passed = pf.passed || 0;
-  const failed = pf.failed || 0;
+  // If backend provides failBins (1,2,3plus) use them to subdivide failures
+  const failBins = pf.failBins || {"1": 0, "2": 0, "3plus": 0};
+  const f1 = failBins["1"] || 0;
+  const f2 = failBins["2"] || 0;
+  const f3 = failBins["3plus"] || 0;
+  const failed = f1 + f2 + f3 || pf.failed || 0;
   const total = passed + failed;
 
   if (!total) {
@@ -920,11 +927,34 @@ function renderPassFailPie() {
       data-name="PASSED" data-qty="${passed}" data-pct="${(passPct*100).toFixed(1)}%"/>`;
   }
   if (failed > 0) {
-    const failPath = slicePath(cx, cy, r, passDeg, passDeg + failPct * 360);
-    paths += `<path d="${failPath}" fill="#E74C3C" stroke="#0F1923" stroke-width="1"
-      onmouseenter="pfSliceEnter(this,event)" onmouseleave="pfSliceLeave(this)" onmousemove="pfSliceMove(event)"
-      onclick="showPassFailDetails('FAILED')"
-      data-name="FAILED" data-qty="${failed}" data-pct="${(failPct*100).toFixed(1)}%"/>`;
+      // Draw subdivisions if backend provided failBins; otherwise draw a
+      // single failure slice to preserve the TOTAL FAILURES view.
+      const colors = {"3": "#E74C3C", "2": "#E67E22", "1": "#F1C40F"};
+      const bins = [{k: '3plus', val: f3, label: 'Failed (3+)'} , {k: '2', val: f2, label: 'Failed (2)'}, {k: '1', val: f1, label: 'Failed (1)'}];
+      const binsSum = (f1 || 0) + (f2 || 0) + (f3 || 0);
+      if (binsSum > 0) {
+        let startDeg = passDeg;
+          bins.forEach(bin => {
+            if (!bin.val) return;
+            const deg = (bin.val / total) * 360;
+            const p = slicePath(cx, cy, r, startDeg, startDeg + deg);
+            const color = bin.k === '3plus' ? colors['3'] : (bin.k === '2' ? colors['2'] : colors['1']);
+            // Map bin.k to fail_bin param: '1','2','3plus'
+            const binKey = bin.k === '3plus' ? '3plus' : (bin.k === '2' ? '2' : '1');
+            paths += `<path d="${p}" fill="${color}" stroke="#0F1923" stroke-width="1"
+              onmouseenter="pfSliceEnter(this,event)" onmouseleave="pfSliceLeave(this)" onmousemove="pfSliceMove(event)"
+              onclick="showPassFailDetails('FAILED','${binKey}')"
+              data-name="${bin.label}" data-qty="${bin.val}" data-pct="${((bin.val/total)*100).toFixed(1)}%"/>`;
+            startDeg += deg;
+          });
+      } else {
+        // No bins available (TOTAL FAILURES mode) — draw single red failure slice.
+        const p = slicePath(cx, cy, r, passDeg, 360);
+        paths += `<path d="${p}" fill="#E74C3C" stroke="#0F1923" stroke-width="1"
+          onmouseenter="pfSliceEnter(this,event)" onmouseleave="pfSliceLeave(this)" onmousemove="pfSliceMove(event)"
+          onclick="showPassFailDetails('FAILED')"
+          data-name="Failed" data-qty="${pf.failed}" data-pct="${((pf.failed/total)*100).toFixed(1)}%"/>`;
+      }
   }
 
   // Center label
@@ -986,7 +1016,7 @@ document.getElementById('detailsModal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
 
-async function showPassFailDetails(resultado) {
+async function showPassFailDetails(resultado, failBin = null) {
   const from = document.getElementById('dateFrom').value;
   const to   = document.getElementById('dateTo').value;
   const prod = activeProduct;
@@ -994,15 +1024,17 @@ async function showPassFailDetails(resultado) {
   const stationFilter = stat ? `&stationid=${encodeURIComponent(stat)}` : '';
 
   const stationLabel = stat ? `(Station ${stat})` : '';
-  const label = resultado === 'PASSED' ? 'PASSED Records' : 'FAILED Records';
+  const labelBase = resultado === 'PASSED' ? 'PASSED Records' : 'FAILED Records';
+  const label = failBin ? `${labelBase} (${failBin})` : labelBase;
   document.getElementById('modalTitle').innerText = (prod !== 'all' ? prod + ' — ' : '') + stationLabel + ' ' + label;
-  
-  const urlBase = `/api/passfail_details?from=${from}&to=${to}&product=${prod}${stationFilter}&resultado=${resultado}&real_failures=${realFailuresMode}`;
+
+  let urlBase = `/api/passfail_details?from=${from}&to=${to}&product=${prod}${stationFilter}&resultado=${resultado}&real_failures=${realFailuresMode}`;
+  if (failBin) urlBase += `&fail_bin=${encodeURIComponent(failBin)}`;
   const btnCsv = document.getElementById('btnDownloadCsv');
   btnCsv.onclick = () => window.open(urlBase + '&csv=true', '_blank');
 
   const tbody = document.querySelector('#modalTable tbody');
-  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Loading data...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8B9BAA">Loading data...</td></tr>';
   document.getElementById('detailsModal').style.display = 'flex';
 
   try {
@@ -1014,10 +1046,10 @@ async function showPassFailDetails(resultado) {
     }
     tbody.innerHTML = '';
     if (data.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">No records found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8B9BAA">No records found.</td></tr>';
       return;
     }
-    data.forEach(row => {
+    data.forEach((row, i) => {
       const tr = document.createElement('tr');
       const qr = row.currQr || row.prevQr || '-';
       const notesText = row.notes || '-';
@@ -1025,8 +1057,10 @@ async function showPassFailDetails(resultado) {
       const isPassed = row.resultado === 'PASSED';
       const fallbackFalla = isPassed ? 'PASSED' : (row.resultado || '-');
       tr.innerHTML = `
+        <td>${i+1}</td>
         <td>${qr}</td>
         <td>${row.stationName || '-'}</td>
+        <td>${row.endtime || '-'}</td>
         <td style="color:${isPassed?'#00D4AA':'#E74C3C'};font-weight:600">${row.tipoFalla || fallbackFalla}</td>
         <td>${row.failureCode || '-'}</td>
         <td class="notes-cell" onclick="this.classList.toggle('expanded')">${escaped}</td>
@@ -1058,29 +1092,31 @@ async function showDetails(falla, stationId = null, stationName = '') {
   btnCsv.onclick = () => window.open(urlBase + '&csv=true', '_blank');
 
   const tbody = document.querySelector('#modalTable tbody');
-  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">Loading data...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8B9BAA">Loading data...</td></tr>';
   document.getElementById('detailsModal').style.display = 'flex';
 
   try {
     const resp = await fetch(urlBase);
     const data = await resp.json();
     if (!resp.ok) {
-      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#FF5A5F">Error: ${data.error}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#FF5A5F">Error: ${data.error}</td></tr>`;
       return;
     }
     tbody.innerHTML = '';
     if (data.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8B9BAA">No records found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8B9BAA">No records found.</td></tr>';
       return;
     }
-    data.forEach(row => {
+    data.forEach((row, i) => {
       const tr = document.createElement('tr');
       const qr = row.currQr || row.prevQr || '-';
       const notesText = row.notes || '-';
       const escaped = notesText.replace(/</g,'&lt;').replace(/>/g,'&gt;');
       tr.innerHTML = `
+        <td>${i+1}</td>
         <td>${qr}</td>
         <td>${row.stationName || '-'}</td>
+        <td>${row.endtime || '-'}</td>
         <td>${row.tipoFalla || '-'}</td>
         <td>${row.failureCode || '-'}</td>
         <td class="notes-cell" onclick="this.classList.toggle('expanded')">${escaped}</td>

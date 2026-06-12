@@ -89,7 +89,7 @@ def _extract_fail_tests_marker(ns):
     return None
 
 
-def _extract_from_json(ns, station):
+def _extract_from_json(ns, station, producto=None):
     """
     Parsea notas JSON y extrae el tipo de falla segun el esquema del grupo:
       - OPAL4:     wrapper {"notes": {"failure_codes": [...]}}
@@ -109,9 +109,77 @@ def _extract_from_json(ns, station):
             fc0     = str(fc_list[0]).strip() if fc_list else ""
             return fc0 if (fc0 and not CODE_RE.match(fc0)) else station
 
-        # BlackBox2 RF Chamber: {"station": "Rack 1 - RF Chamber BLE Test"}
+        # BlackBox2 RF Chamber: special classification logic when data fields present
         if "station" in parsed:
-            parts = str(parsed["station"]).split(" - ")
+            # Si este JSON corresponde a Black Box 2 (por producto o por nombre de station),
+            # aplicar reglas especiales solicitadas por el equipo de validación.
+            station_str = str(parsed.get("station", ""))
+            is_blackbox2 = (producto and "Black Box 2" in str(producto)) or ("Black Box 2" in station_str)
+            if is_blackbox2:
+                # 1) MACID unknown -> MACID failure
+                mac = parsed.get("mac_id")
+                try:
+                    if isinstance(mac, str) and mac.strip().upper() == "UNKNOWN":
+                        return "MACID failure"
+                except Exception:
+                    pass
+
+                # 2) failure_reason contains 'backward_check_failed' -> backward fail
+                failure_reason = parsed.get("failure_reason")
+                try:
+                    if isinstance(failure_reason, str) and "backward_check_failed" in failure_reason:
+                        return "backward fail"
+                except Exception:
+                    pass
+
+                # 3) PCBA unknown -> pcba_qr unknown (user requested label)
+                pcba = parsed.get("pcba_qr")
+                try:
+                    if isinstance(pcba, str) and pcba.strip().upper() == "UNKNOWN":
+                        return "pcba_qr unknown"
+                except Exception:
+                    pass
+
+                # 3) RSSI range check -> RSSI failure
+                rssi_val = parsed.get("rssi_dbm")
+                rssi_range = parsed.get("rssi_pass_range") or ""
+                try:
+                    m = re.search(r'(-?\d+)\s*to\s*(-?\d+)', str(rssi_range))
+                    if m and rssi_val is not None:
+                        low = int(m.group(1))
+                        high = int(m.group(2))
+                        try:
+                            rnum = float(rssi_val)
+                            if rnum < low or rnum > high:
+                                return "RSSI failure"
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # 4) Battery range check -> Battery failure
+                try:
+                    batt = parsed.get("battery_voltage_v")
+                    bmin = parsed.get("battery_min_v")
+                    bmax = parsed.get("battery_max_v")
+                    if batt is not None and bmin is not None and bmax is not None:
+                        try:
+                            bf = float(batt)
+                            bminf = float(bmin)
+                            bmaxf = float(bmax)
+                            if bf < bminf or bf > bmaxf:
+                                return "Battery failure"
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Si ninguna regla matchea, devolver el nombre de la prueba tal cual (default)
+                parts = station_str.split(" - ")
+                return parts[-1].strip() if len(parts) > 1 else parts[0].strip()
+
+            # No es BlackBox2 — comportamiento original: devolver la parte despues de ' - '
+            parts = station_str.split(" - ")
             return parts[-1].strip() if len(parts) > 1 else parts[0].strip()
 
         # failure_codes[0] como ultimo recurso JSON
@@ -199,7 +267,7 @@ def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
             return result
 
         # 6. JSON estructurado
-        result = _extract_from_json(ns, station)
+        result = _extract_from_json(ns, station, producto)
         if result:
             return result
 

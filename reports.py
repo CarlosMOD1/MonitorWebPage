@@ -155,6 +155,11 @@ def _build_time_series(df):
     Retorna (daily_df, weekly_df, monthly_df).
     """
     df = df.copy()
+    # Asegurar que `endtime` sea datetime; si no, intentar parsear y descartar no-parseables
+    if not pd.api.types.is_datetime64_any_dtype(df["endtime"]):
+        df["endtime"] = pd.to_datetime(df["endtime"], errors="coerce")
+    df = df.dropna(subset=["endtime"])  # eliminar filas sin fecha valida
+
     df["period_d"] = df["endtime"].dt.date
     df["period_w"] = df["endtime"].dt.to_period("W")
     df["period_m"] = df["endtime"].dt.to_period("M")

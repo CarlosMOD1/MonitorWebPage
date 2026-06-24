@@ -529,11 +529,19 @@ function polarXY(cx, cy, r, angleDeg) {
 }
 
 function slicePath(cx, cy, r, startDeg, endDeg) {
-  // Handle full circle (100%)
-  if (endDeg - startDeg >= 360) endDeg = startDeg + 359.9999;
+  // Normalize span
+  let span = endDeg - startDeg;
+  // Handle full circle (100%) by emitting two half-arcs (single arc to same point
+  // can render as a thin line in some browsers). This draws a complete wedge.
+  if (span >= 360) {
+    const s = polarXY(cx, cy, r, 0);
+    const m = polarXY(cx, cy, r, 180);
+    return `M${cx},${cy} L${s.x.toFixed(2)},${s.y.toFixed(2)} A${r},${r} 0 1 1 ${m.x.toFixed(2)},${m.y.toFixed(2)} A${r},${r} 0 1 1 ${s.x.toFixed(2)},${s.y.toFixed(2)} Z`;
+  }
+  if (span < 0) span = 0;
   const s = polarXY(cx, cy, r, startDeg);
   const e = polarXY(cx, cy, r, endDeg);
-  const large = endDeg - startDeg > 180 ? 1 : 0;
+  const large = span > 180 ? 1 : 0;
   return `M${cx},${cy} L${s.x.toFixed(2)},${s.y.toFixed(2)} A${r},${r} 0 ${large} 1 ${e.x.toFixed(2)},${e.y.toFixed(2)} Z`;
 }
 

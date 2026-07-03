@@ -535,14 +535,60 @@ def compute_report_data(df, date_from_str, date_to_str):
     fpy_cnt = int(df["failureCode"].str.contains(r".*-PASS-.*", na=False).sum())
     fpy_pct = round(fpy_cnt / total * 100, 1) if total else 0.0
 
-    # RTY (Rolled Throughput Yield): producto de los yields por estacion
+    # RTY (Rolled Throughput Yield): producto de los FPY por estacion
+    # Usar solo el PRIMER intento por unidad en cada estación (ignora reintentos
+    # al calcular FPY, aunque los reintentos sí reducen el FPY porque no se
+    # cuentan como primera pasada). Excluir estaciones con muy pocas unidades.
+    RTY_MIN_UNITS_PER_STATION = 5
     rty_pct = None
-    st_groups = [(sid, g) for sid, g in df.groupby("stationid") if len(g) > 0]
-    if len(st_groups) > 1:
+    rty_by_station = []
+
+    groups = [g for _, g in df.groupby(["stationid", "stationName", "producto"]) if len(g) > 0]
+    if len(groups) > 1:
         rty = 1.0
-        for _, g in st_groups:
-            rty *= int((g["resultado"] == "PASSED").sum()) / len(g)
-        rty_pct = round(rty * 100, 1)
+        included = 0
+        for g in groups:
+            # Primer intento por unidad (prevQr) ordenado por endtime
+            first = g.sort_values("endtime").drop_duplicates(subset="prevQr", keep="first")
+            total_first = len(first)
+            if total_first < RTY_MIN_UNITS_PER_STATION:
+                # registrar pero no incluir en el producto del RTY
+                sid = int(g["stationid"].iloc[0])
+                rty_by_station.append({
+                    "id": sid,
+                    "name": str(g["stationName"].iloc[0]),
+                    "producto": g["producto"].iloc[0] if "producto" in g.columns else None,
+                    "units_first_attempt": total_first,
+                    "first_pass": int((first["resultado"] == "PASSED").sum()),
+                    "not_first_pass": int((first["resultado"] != "PASSED").sum()),
+                    "fpy_pct": round((int((first["resultado"] == "PASSED").sum()) / total_first * 100), 1) if total_first else 0.0,
+                    "included_in_rty": False,
+                })
+                continue
+
+            first_pass = int((first["resultado"] == "PASSED").sum())
+            not_first_pass = total_first - first_pass
+            fpy_pct_station = round(first_pass / total_first * 100, 1) if total_first else 0.0
+
+            rty *= (first_pass / total_first) if total_first else 1.0
+            included += 1
+
+            sid = int(g["stationid"].iloc[0])
+            rty_by_station.append({
+                "id": sid,
+                "name": str(g["stationName"].iloc[0]),
+                "producto": g["producto"].iloc[0] if "producto" in g.columns else None,
+                "units_first_attempt": total_first,
+                "first_pass": first_pass,
+                "not_first_pass": not_first_pass,
+                "fpy_pct": fpy_pct_station,
+                "included_in_rty": True,
+            })
+
+        if included > 0:
+            rty_pct = round(rty * 100, 1)
+        else:
+            rty_pct = None
 
     # Series de tiempo — columnas sin guion bajo inicial para evitar problemas con itertuples
     df2 = df.copy()
@@ -601,6 +647,7 @@ def compute_report_data(df, date_from_str, date_to_str):
             "fpy_pct":   fpy_pct,
             "rty_pct":   rty_pct,
         },
+        "rty_by_station": rty_by_station,
         "daily":   _ts_agg("period_d", 30),
         "weekly":  _ts_agg("period_w", 12),
         "monthly": _ts_agg("period_m", 12),

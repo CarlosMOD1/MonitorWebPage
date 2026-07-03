@@ -34,7 +34,7 @@ UNDIFF_STATIONS = {406, 393}
 # ─────────────────────────────────────────────────────────────
 # CONSTANTES DE COMPORTAMIENTO DEL DASHBOARD
 # ─────────────────────────────────────────────────────────────
-HISTORICAL_LOAD_DAYS       = 30    # Dias de historia a cargar al iniciar
+HISTORICAL_LOAD_DAYS       = 180    # Dias de historia a cargar al iniciar
 RECENT_REFRESH_DAYS        = 2     # Ventana de refresco en segundo plano
 REFRESH_INTERVAL_MINUTES   = 15    # Frecuencia del hilo de refresco
 REAL_FAILURE_HOURS         = 1     # Horas minimas para considerar una falla "real"

@@ -176,6 +176,7 @@ tbody tr:hover td{background:#1E3A5F}
         <div class="rpt-period" id="reportPeriodLabel"></div>
       </div>
       <div class="rpt-header-right">
+        <button class="btn-refresh" id="btnRTY" style="background:#9B59B6;font-size:11px;padding:5px 13px;margin-right:8px" onclick="_showRTY()">RTY</button>
         <button class="btn-refresh" style="background:#27AE60;font-size:11px;padding:5px 13px" onclick="_doExcelDownload()">⬇️ Download Excel</button>
         <button class="close-btn" onclick="closeReportModal()">&times;</button>
       </div>
@@ -819,6 +820,14 @@ function _renderReportPanel(data, view) {
       </div>
     </div>`;
 
+  // Ensure RTY button is visible and wired
+  const btn = document.getElementById('btnRTY');
+  if (btn) {
+    btn.style.display = 'inline-block';
+    btn.classList.remove('active');
+    btn.onclick = () => _showRTY();
+  }
+
   _renderYieldChart(cd, view);
 }
 
@@ -860,6 +869,83 @@ function _renderYieldChart(cd, view) {
       }
     }
   });
+}
+
+function _showRTY() {
+  if (!_reportData) return _fetchReportData();
+  _renderRTYPanel(_reportData);
+}
+
+function _renderRTYPanel(data) {
+  const list = data.rty_by_station || [];
+  const rows = list.length ? list.map(s => `
+    <tr>
+      <td>${s.id}</td>
+      <td style="font-size:10px;color:#a0b0c0">${s.name}</td>
+      <td style="font-size:10px;color:#a0b0c0">${s.producto || s.producto || ''}</td>
+      <td style="text-align:center">${fmt(s.units_first_attempt)}</td>
+      <td style="text-align:center">${fmt(s.first_pass)}</td>
+      <td style="text-align:center">${fmt(s.not_first_pass)}</td>
+      <td style="text-align:center;color:${yieldColor(s.fpy_pct)};font-weight:700">${(s.fpy_pct||0).toFixed(1)}%</td>
+      <td style="text-align:center">${s.included_in_rty ? 'Yes' : 'No'}</td>
+    </tr>`).join('') : '';
+
+  const tableHtml = `
+    <div class="rpt-section-title">RTY by Station</div>
+    <div class="rpt-tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Station ID</th><th>Station Name</th><th>Product</th>
+          <th>Units (first)</th><th>First Pass</th><th>Not First Pass</th>
+          <th>FPY %</th><th>Included</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="8" style="text-align:center;color:#8B9BAA;padding:16px">No RTY data</td></tr>'}</tbody>
+      </table>
+    </div>`;
+
+  // show RTY as KPI if present
+  const rtyKpi = (data.summary && data.summary.rty_pct != null)
+    ? `<div class="rpt-kpi" style="border-top:2px solid #9B59B6">
+         <div class="rpt-kv" style="color:#9B59B6">${(data.summary.rty_pct||0).toFixed(1)}%</div>
+         <div class="rpt-kl">RTY</div></div>`
+    : '';
+
+  document.getElementById('reportBody').innerHTML = `
+    <div class="rpt-kpis">
+      <div class="rpt-kpi" style="border-top:2px solid #2E9CDB">
+        <div class="rpt-kv">${fmt(data.summary.total)}</div><div class="rpt-kl">TOTAL TESTS</div></div>
+      <div class="rpt-kpi" style="border-top:2px solid #00D4AA">
+        <div class="rpt-kv">${fmt(data.summary.passed)}</div><div class="rpt-kl">PASSED</div></div>
+      <div class="rpt-kpi" style="border-top:2px solid #E74C3C">
+        <div class="rpt-kv">${fmt(data.summary.failed)}</div><div class="rpt-kl">FAILED</div></div>
+      ${rtyKpi}
+    </div>
+    <div style="margin-top:8px">${tableHtml}</div>`;
+
+  // mark button active
+  const btn = document.getElementById('btnRTY');
+  if (btn) btn.classList.add('active');
+
+  // ensure a Back button exists in the header to return from RTY view
+  const hdrRight = document.querySelector('.rpt-header-right');
+  if (hdrRight) {
+    if (!document.getElementById('btnRTYBack')) {
+      hdrRight.insertAdjacentHTML('afterbegin',
+        `<button class="btn-refresh" id="btnRTYBack" style="background:#555;color:#fff;margin-right:8px;padding:6px 12px;font-size:12px" onclick="_backFromRTY()">⬅️ Volver</button>`
+      );
+    } else {
+      document.getElementById('btnRTYBack').style.display = 'inline-block';
+    }
+  }
+}
+
+function _backFromRTY() {
+  const btn = document.getElementById('btnRTY');
+  if (btn) btn.classList.remove('active');
+  // hide back button (it will be recreated when needed)
+  const b = document.getElementById('btnRTYBack');
+  if (b) b.style.display = 'none';
+  if (_reportData) _renderReportPanel(_reportData, _reportView);
 }
 
 // ── Download General CSV ────────────────────────────

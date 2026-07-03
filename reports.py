@@ -326,6 +326,38 @@ def _add_failures_sheet(wb, df):
         _write_data_row(ws, i, [row.tipoFalla, row.stationName, row.producto, int(row.count), pct])
 
 
+def _add_rty_sheet(wb, df, min_units=5):
+    """Añade hoja con impacto de cada estación en el RTY.
+    Calcula FPY usando solo el PRIMER intento por unidad (`prevQr`).
+    """
+    ws = wb.create_sheet("RTY by Station")
+    _write_sheet_title(ws, "RTY by Station", f"First-attempt FPY (min_units={min_units})")
+    headers = ["Station ID", "Station Name", "Product", "Units (first)", "First Pass", "Not First Pass", "FPY %", "Included in RTY"]
+    _write_header_row(ws, 3, headers, [12, 28, 12, 14, 12, 14, 10, 16])
+
+    row_num = 4
+    groups = [g for _, g in df.groupby(["stationid", "stationName", "producto"]) if len(g) > 0]
+    for g in groups:
+        first = g.sort_values("endtime").drop_duplicates(subset="prevQr", keep="first")
+        total_first = len(first)
+        first_pass = int((first["resultado"] == "PASSED").sum())
+        not_first = total_first - first_pass
+        fpy_pct = round(first_pass / total_first * 100, 1) if total_first else 0.0
+        included = total_first >= min_units
+
+        _write_data_row(ws, row_num, [
+            int(g["stationid"].iloc[0]),
+            str(g["stationName"].iloc[0]),
+            g["producto"].iloc[0] if "producto" in g.columns else "",
+            total_first,
+            first_pass,
+            not_first,
+            fpy_pct,
+            "Yes" if included else "No",
+        ], yield_col=7)
+        row_num += 1
+
+
 # ─────────────────────────────────────────────────────────────
 # GRAFICAS DE LINEA (opcionales; se omiten si falla openpyxl)
 # ─────────────────────────────────────────────────────────────
@@ -387,6 +419,7 @@ def generate_excel_report(df, label, date_from_str, date_to_str):
     _add_weekly_sheet(wb, weekly)
     _add_monthly_sheet(wb, monthly)
     _add_failures_sheet(wb, df)
+    _add_rty_sheet(wb, df)
 
     # Graficas de tendencia
     _add_yield_chart(wb, "Daily Yield",   "Daily Yield Trend",   4, len(daily))

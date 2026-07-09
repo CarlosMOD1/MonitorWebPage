@@ -224,7 +224,7 @@ def _extract_from_plain_text(ns, station, producto, fc):
     return None
 
 
-def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
+def _extract_tipo_falla_impl(failure_code, notes_raw, station_name="", producto=""):
     """
     Determina el tipo de falla legible a partir de failureCode y notes.
 
@@ -278,6 +278,31 @@ def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
 
     # 8. Ultimo recurso
     return fc
+
+
+# ─────────────────────────────────────────────────────────────
+# CACHE DE TIPO DE FALLA
+# ─────────────────────────────────────────────────────────────
+# Evita re-parsear failureCode/notes para registros ya vistos.
+# Clave: (failureCode, notes, stationName, producto) normalizados.
+# Carga inicial: se rellena progresivamente (~261k filas la primera vez).
+# Refresco de fondo: la mayoria ya existe → lookup O(1) por fila → segundos.
+_TIPO_FALLA_CACHE: dict = {}
+
+
+def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
+    """Wrapper publico con cache. Llama a _extract_tipo_falla_impl solo la primera vez."""
+    key = (
+        str(failure_code).strip() if failure_code and str(failure_code) not in ("nan", "None") else "",
+        str(notes_raw).strip()    if notes_raw    and str(notes_raw)    not in ("nan", "None", "") else "",
+        str(station_name).strip() if station_name and str(station_name) not in ("nan", "None") else "",
+        str(producto).strip()     if producto     and str(producto)     not in ("nan", "None") else "",
+    )
+    if key in _TIPO_FALLA_CACHE:
+        return _TIPO_FALLA_CACHE[key]
+    result = _extract_tipo_falla_impl(failure_code, notes_raw, station_name, producto)
+    _TIPO_FALLA_CACHE[key] = result
+    return result
 
 
 # ─────────────────────────────────────────────────────────────
@@ -365,18 +390,22 @@ def prepare_dataframe(df):
 
 def load_historical_data():
     """Carga los ultimos HISTORICAL_LOAD_DAYS dias desde la BD al arrancar el servidor."""
+    t0 = time.time()
     print("[DATABASE] Iniciando carga de datos historicos...")
     start_date = (datetime.now() - timedelta(days=HISTORICAL_LOAD_DAYS)).strftime("%Y-%m-%d")
 
     conn = connect()
     df   = pd.read_sql(SQL + f" AND e.endtime >= '{start_date}'", conn)
     conn.close()
+    t_sql = time.time() - t0
+    print(f"[DATABASE] SQL completo: {len(df)} filas en {t_sql:.1f}s. Procesando tipoFalla...")
 
     df = prepare_dataframe(df)
 
     GLOBAL_CACHE["df"]           = df
     GLOBAL_CACHE["last_updated"] = datetime.now()
-    print(f"[DATABASE] Carga inicial completa. {len(df)} registros en RAM.")
+    print(f"[DATABASE] Carga inicial completa. {len(df)} registros en RAM. "
+          f"Total: {time.time()-t0:.1f}s | Cache tipoFalla: {len(_TIPO_FALLA_CACHE)} entradas unicas.")
 
 
 def background_update_worker():
@@ -388,6 +417,7 @@ def background_update_worker():
     while True:
         time.sleep(REFRESH_INTERVAL_MINUTES * 60)
         try:
+            t0 = time.time()
             print("[BACKGROUND] Refrescando registros recientes de DB...")
             cutoff_str = (datetime.now() - timedelta(days=RECENT_REFRESH_DAYS)).strftime("%Y-%m-%d")
             cutoff_ts  = pd.to_datetime(cutoff_str)
@@ -405,7 +435,8 @@ def background_update_worker():
 
             GLOBAL_CACHE["df"]           = new_df
             GLOBAL_CACHE["last_updated"] = datetime.now()
-            print(f"[BACKGROUND] Actualizacion completa. Total: {len(new_df)} registros en RAM.")
+            print(f"[BACKGROUND] Actualizacion completa. {len(df_recent)} filas en "
+                  f"{time.time()-t0:.1f}s | Total RAM: {len(new_df)} | Cache tipoFalla: {len(_TIPO_FALLA_CACHE)}")
 
         except Exception as exc:
             print(f"[BACKGROUND] Error en hilo de actualizacion: {exc}")

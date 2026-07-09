@@ -300,7 +300,11 @@ def prepare_dataframe(df):
         return df
 
     if not pd.api.types.is_datetime64_any_dtype(df["endtime"]):
-        df["endtime"] = pd.to_datetime(df["endtime"])
+        # Coerce invalid values to NaT to avoid .dt accessor errors on some
+        # environments where the DB driver returns strings or mixed types.
+        df["endtime"] = pd.to_datetime(df["endtime"], errors="coerce")
+        # Drop rows without a valid timestamp as they are not usable for time-series
+        df = df.dropna(subset=["endtime"]) if not df.empty else df
 
     # Paso 2: asignacion inicial por estacion
     df["producto"] = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
@@ -592,6 +596,10 @@ def compute_report_data(df, date_from_str, date_to_str):
 
     # Series de tiempo — columnas sin guion bajo inicial para evitar problemas con itertuples
     df2 = df.copy()
+    # Ensure endtime is datetime-like before using .dt (defensive for Pi envs)
+    if not pd.api.types.is_datetime64_any_dtype(df2["endtime"]):
+        df2["endtime"] = pd.to_datetime(df2["endtime"], errors="coerce")
+    df2 = df2.dropna(subset=["endtime"]) if not df2.empty else df2
     df2["period_d"] = df2["endtime"].dt.date.astype(str)
     df2["period_w"] = df2["endtime"].dt.to_period("W").astype(str)
     df2["period_m"] = df2["endtime"].dt.to_period("M").astype(str)

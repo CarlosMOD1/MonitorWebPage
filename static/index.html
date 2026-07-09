@@ -135,6 +135,13 @@ tbody tr:hover td{background:#1E3A5F}
   .rpt-tbl-wrap th{padding:6px 8px;font-size:9px;color:#2E9CDB;background:#0F1923;position:sticky;top:0}
   .rpt-tbl-wrap td{padding:5px 8px;font-size:11px;border-bottom:1px solid #0F1923;color:#8B9BAA}
   .rpt-tbl-wrap tbody tr:hover td{background:#1E3A5F}
+  /* Monitor FPY toggle & range buttons */
+  .btn-fpy-toggle{background:#1E6FBA;color:#fff;border:none;padding:4px 12px;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;transition:all .2s}
+  .btn-fpy-toggle:hover{background:#2E9CDB}
+  .btn-fpy-toggle.active{background:#F1C40F;color:#0F1923}
+  .fpy-range-btn{background:#1A2B3C;border:1px solid #2C3E50;color:#8B9BAA;padding:2px 8px;border-radius:10px;cursor:pointer;font-size:10px;font-weight:700;transition:all .15s}
+  .fpy-range-btn:hover{background:#1E3A5F;color:#fff}
+  .fpy-range-btn.active{background:#1E6FBA;color:#fff;border-color:#1E6FBA}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -211,7 +218,6 @@ tbody tr:hover td{background:#1E3A5F}
         <div class="period" id="periodLabel"></div>
       </div>
       <div class="date-range">
-        <button class="btn-refresh" style="background:#8B9BAA;margin-right:10px;" onclick="openMonitor()">Monitor FPY</button>
         <button class="btn-real" id="btnReal" onclick="toggleRealFailures()">Unique QRs</button>
         <label>From</label>
         <input type="date" id="dateFrom">
@@ -243,7 +249,10 @@ tbody tr:hover td{background:#1E3A5F}
         </div>
       </div>
       <div class="right">
-        <div style="display:flex;gap:8px;flex:1;overflow:hidden">
+        <div style="display:flex;justify-content:flex-end;flex-shrink:0;padding-bottom:4px">
+          <button class="btn-fpy-toggle" id="btnMonitorFPY" onclick="toggleMonitorFPY()">⏱️ Monitor FPY</button>
+        </div>
+        <div id="pieChartsRow" style="display:flex;gap:8px;flex:1;overflow:hidden">
           <div class="pie-wrap" style="flex:1">
             <div class="section-title">PASS / FAIL</div>
             <div class="pie-svg-wrap" id="passFailPieWrap">
@@ -255,6 +264,12 @@ tbody tr:hover td{background:#1E3A5F}
             <div class="pie-svg-wrap" id="pieSvgWrap">
               <div class="pie-tooltip" id="pieTooltip"></div>
             </div>
+          </div>
+        </div>
+        <div id="fpyInlineWrap" class="pie-wrap" style="display:none;flex:1;flex-direction:column;gap:4px;overflow:hidden">
+          <div class="section-title" id="fpyInlineTitle" style="flex-shrink:0;margin-bottom:0">MONITOR FPY</div>
+          <div style="position:relative;flex:1;min-height:120px;width:100%">
+            <canvas id="fpyInlineCanvas" style="display:block"></canvas>
           </div>
         </div>
         <div class="top3-wrap">
@@ -336,9 +351,118 @@ function applyDateFilter() {
   loadData(from, to);
 }
 
-function openMonitor() {
-  const toDate = document.getElementById('dateTo').value || new Date().toISOString().slice(0,10);
-  window.location.href = `/monitor?product=${activeProduct}&date=${toDate}`;
+// ── Monitor FPY Inline ──────────────────────────────
+let fpyInlineActive = false;
+let fpyInlineChart  = null;
+
+function toggleMonitorFPY() {
+  fpyInlineActive = !fpyInlineActive;
+  const piesRow = document.getElementById('pieChartsRow');
+  const fpyWrap = document.getElementById('fpyInlineWrap');
+  const btn     = document.getElementById('btnMonitorFPY');
+  if (fpyInlineActive) {
+    piesRow.style.display = 'none';
+    fpyWrap.style.display = 'flex';
+    btn.textContent = '📊 Failure Charts';
+    btn.classList.add('active');
+    // requestAnimationFrame ensures the browser computes layout before Chart.js
+    // measures the canvas container; without this the chart renders at 0px height
+    requestAnimationFrame(() => requestAnimationFrame(loadInlineFPY));
+  } else {
+    piesRow.style.display = 'flex';
+    fpyWrap.style.display = 'none';
+    btn.textContent = '⏱️ Monitor FPY';
+    btn.classList.remove('active');
+    if (fpyInlineChart) { fpyInlineChart.destroy(); fpyInlineChart = null; }
+  }
+}
+
+async function loadInlineFPY() {
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  if (!from || !to) return;
+  let url = `/api/fpy_range?from_dt=${from}&to_dt=${to}&product=${activeProduct}`;
+  if (activeStation !== 'all') url += `&stationid=${activeStation}`;
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) { console.warn('FPY range error:', data.error); return; }
+    renderInlineFPY(data);
+  } catch (e) {
+    console.error('Error loading inline FPY:', e);
+  }
+}
+
+function _fpyBarColor(val) {
+  if (val == null) return '#2a2a2a';
+  if (val < 80)   return '#E74C3C';
+  if (val < 90)   return '#F1C40F';
+  return '#00D4AA';
+}
+
+function renderInlineFPY(data) {
+  const canvas = document.getElementById('fpyInlineCanvas');
+  if (!canvas) return;
+  const titleEl = document.getElementById('fpyInlineTitle');
+  if (titleEl) titleEl.textContent = 'MONITOR FPY — ' + (data.station_name || 'All Stations');
+  if (fpyInlineChart) { fpyInlineChart.destroy(); fpyInlineChart = null; }
+
+  const labels    = data.labels  || [];
+  const fpy       = data.fpy     || [];
+  const count     = data.count   || [];
+  const passed    = data.passed  || [];
+  const barData   = fpy.map((v, i) => count[i] > 0 ? (v ?? 0) : 0);
+  const lineData  = fpy.map((v, i) => count[i] > 0 ? v : null);
+  const barColors = fpy.map((v, i) => count[i] > 0 ? _fpyBarColor(v) : '#2a2a2a');
+
+  const topLabelsPlugin = {
+    id: 'fpyTopLabels',
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart;
+      const meta = chart.getDatasetMeta(0);
+      ctx.save();
+      meta.data.forEach((bar, i) => {
+        if (!count[i]) return;
+        const bx = bar.x, by = bar.y;
+        const t1 = fpy[i] != null ? `${Number(fpy[i]).toFixed(0)}%` : '—';
+        const t2 = `${passed[i]}/${count[i]}`;
+        ctx.font = 'bold 10px sans-serif';
+        const w = Math.max(ctx.measureText(t1).width, ctx.measureText(t2).width) + 6;
+        ctx.fillStyle = 'rgba(15,25,35,0.9)';
+        ctx.fillRect(bx - w/2, by - 30, w, 28);
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillText(t1, bx, by - 15);
+        ctx.fillStyle = '#aaa'; ctx.font = '9px sans-serif';
+        ctx.fillText(t2, bx, by - 4);
+      });
+      ctx.restore();
+    }
+  };
+
+  fpyInlineChart = new Chart(canvas, {
+    type: 'bar',
+    plugins: [topLabelsPlugin],
+    data: {
+      labels,
+      datasets: [
+        { type: 'bar',  data: barData,  backgroundColor: barColors, order: 2, barPercentage: 0.7 },
+        { type: 'line', data: lineData, borderColor: '#fff', borderWidth: 2,
+          pointBackgroundColor: '#fff', pointRadius: 3, order: 1, spanGaps: true }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      layout: { padding: { top: 35 } },
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: {
+        y: { min: 0, max: 115,
+             grid: { color: 'rgba(255,255,255,0.08)' },
+             ticks: { stepSize: 20, color: '#8B9BAA', callback: v => v + '%' } },
+        x: { grid: { display: false },
+             ticks: { color: '#8B9BAA', font: { size: 9 }, maxRotation: 45, maxTicksLimit: 24 } }
+      }
+    }
+  });
 }
 
 // ── UI helpers ──────────────────────────────────────
@@ -1099,6 +1223,7 @@ function render() {
   renderTable();
   renderPassFailPie();
   renderPieTop3();
+  if (fpyInlineActive) loadInlineFPY();
 }
 
 // ── Modal logic ──────────────────────────────────────

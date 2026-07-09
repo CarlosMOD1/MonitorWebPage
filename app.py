@@ -282,6 +282,107 @@ def api_monitor_data():
 
 
 # ─────────────────────────────────────────────────────────────
+# RUTA: MONITOR FPY — RANGO FLEXIBLE
+# ─────────────────────────────────────────────────────────────
+
+@app.route("/api/fpy_range")
+def api_fpy_range():
+    """
+    Historial de yield para el rango de fechas del dashboard principal.
+    Granularidad automatica:
+      <= 3 dias  -> horario  (1 punto/hora)
+      > 3 dias   -> diario   (1 punto/dia)
+    Parametros:
+      from_dt   — fecha inicio (YYYY-MM-DD)
+      to_dt     — fecha fin    (YYYY-MM-DD)
+      product   — filtro de producto ('all' o nombre)
+      stationid — filtro de estacion (int o 'all')
+    """
+    from_dt_str = request.args.get("from_dt", None)
+    to_dt_str   = request.args.get("to_dt",   None)
+    product     = request.args.get("product",  "all")
+    station_id  = request.args.get("stationid","all")
+
+    try:
+        df = _get_cached_df()
+        if df is None:
+            return jsonify({"error": "System booting", "labels": [], "fpy": [],
+                            "count": [], "passed": []}), 503
+
+        now     = datetime.now()
+        dt_from = pd.to_datetime(from_dt_str) if from_dt_str else now - timedelta(days=30)
+        dt_to   = (pd.to_datetime(to_dt_str) + timedelta(hours=23, minutes=59, seconds=59)
+                   if to_dt_str else now)
+
+        delta_days = max((dt_to - dt_from).days, 1)
+        use_hourly = delta_days <= 3
+
+        df_range = df[(df["endtime"] >= dt_from) & (df["endtime"] <= dt_to)].copy()
+        df_range = _filter_by_product(df_range, product)
+        df_range = df_range.dropna(subset=["endtime"])
+
+        station_name = product if product != "all" else "All Stations"
+
+        if station_id and station_id != "all":
+            try:
+                sid      = int(station_id)
+                df_range = df_range[df_range["stationid"] == sid]
+                station_name = (str(df_range["stationName"].iloc[0])
+                                if not df_range.empty else f"Station {sid}")
+            except (ValueError, KeyError, IndexError):
+                pass
+
+        if df_range.empty:
+            return jsonify({
+                "labels": [], "fpy": [], "count": [], "passed": [],
+                "station_name": station_name,
+            })
+
+        if use_hourly:
+            df_range["bucket"] = df_range["endtime"].dt.floor("h")
+            all_buckets = pd.date_range(
+                start=dt_from.floor("h"), end=dt_to.floor("h"), freq="h"
+            )
+            lbl_fmt = "%m/%d %H:%M"
+        else:
+            df_range["bucket"] = df_range["endtime"].dt.floor("D")
+            all_buckets = pd.date_range(
+                start=dt_from.floor("D"), end=dt_to.floor("D"), freq="D"
+            )
+            lbl_fmt = "%b %d"
+
+        agg = (
+            df_range.groupby("bucket")
+            .agg(
+                total =("resultado", "count"),
+                passed=("resultado", lambda x: int((x == "PASSED").sum())),
+            )
+            .reset_index()
+        )
+
+        full   = pd.DataFrame({"bucket": all_buckets})
+        merged = full.merge(agg, on="bucket", how="left")
+        merged["total"]  = merged["total"].fillna(0).astype(int)
+        merged["passed"] = merged["passed"].fillna(0).astype(int)
+        merged["fpy"]    = (
+            (merged["passed"] / merged["total"] * 100)
+            .where(merged["total"] > 0)
+            .round(1)
+        )
+
+        return jsonify({
+            "labels":       [b.strftime(lbl_fmt) for b in merged["bucket"]],
+            "fpy":          [None if pd.isna(v) else float(v) for v in merged["fpy"]],
+            "count":        merged["total"].tolist(),
+            "passed":       merged["passed"].tolist(),
+            "station_name": station_name,
+        })
+
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ─────────────────────────────────────────────────────────────
 # RUTA: DETALLES DE FALLAS
 # ─────────────────────────────────────────────────────────────
 

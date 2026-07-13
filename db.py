@@ -39,11 +39,10 @@ def connect_qr():
     return pyodbc.connect(_build_conn_str(DB_NAME_QR), timeout=DB_CONNECT_TIMEOUT_SECONDS)
 
 
-def lookup_model_numbers(qr_codes):
+def lookup_model_and_tape(qr_codes):
     """
-    Consulta trk.qrmac_db y devuelve {qrcode: modelNumber} para los QRs dados.
-    Filtra QRs nulos/vacios antes de consultar. Si la conexion falla, devuelve {}
-    y los registros quedaran con fallback "SPSF" en prepare_dataframe.
+    Consulta trk.qrmac_db y devuelve {qrcode: {"modelNumber": str, "tapeColor": str}} para los QRs dados.
+    Filtra QRs nulos/vacios antes de consultar.
     Usa parametros seguros en lotes de 500 para evitar inyeccion SQL.
     """
     _EMPTY_VALUES = {"", "nan", "None", "null", "undefined"}
@@ -62,14 +61,16 @@ def lookup_model_numbers(qr_codes):
             chunk        = unique_qrs[i : i + batch_size]
             placeholders = ",".join("?" for _ in chunk)
             sql = (
-                f"SELECT qrcode, modelNumber "
+                f"SELECT qrcode, modelNumber, tapeColor "
                 f"FROM trk.qrmac_db WHERE qrcode IN ({placeholders})"
             )
             for row in conn.execute(sql, chunk).fetchall():
-                if row[1] is not None:
-                    result[str(row[0])] = str(row[1]).strip()
+                qr = str(row[0])
+                model = str(row[1]).strip() if row[1] is not None else ""
+                tape = str(row[2]).strip() if row[2] is not None else ""
+                result[qr] = {"modelNumber": model, "tapeColor": tape}
         conn.close()
     except Exception as exc:
-        print(f"[WARNING] lookup_model_numbers: no se pudo consultar {DB_NAME_QR}: {exc}")
+        print(f"[WARNING] lookup_model_and_tape: no se pudo consultar {DB_NAME_QR}: {exc}")
 
     return result

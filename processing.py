@@ -26,7 +26,7 @@ from config import (
     MODEL_NUMBER_TO_PRODUCT, STATION_TO_GROUP, STATION_ORDER,
     CODE_RE, METADATA_RE, GROUP_NAMES,
 )
-from db import connect, lookup_model_numbers
+from db import connect, lookup_model_and_tape
 
 # ─────────────────────────────────────────────────────────────
 # CACHE GLOBAL EN RAM
@@ -333,6 +333,31 @@ def prepare_dataframe(df):
 
     # Paso 2: asignacion inicial por estacion
     df["producto"] = df["stationid"].map(STATION_TO_GROUP).fillna("Other")
+
+    # Paso 2.5: resolver Lima vs White Tape por tapeColor
+    # Estacion 90 esta compartida por Lima y White Tape.
+    from config import GROUPS
+    lima_white_stations = set(GROUPS.get("Lima", [])) & set(GROUPS.get("White tape", []))
+    if lima_white_stations:
+        lw_mask = df["stationid"].isin(lima_white_stations)
+        if lw_mask.any():
+            from db import lookup_model_and_tape
+            # Consultar QRs para saber el tapeColor
+            lw_qrs = df.loc[lw_mask, "currQr"].dropna().unique().tolist()
+            qr_data = lookup_model_and_tape(lw_qrs)
+            
+            def _assign_lw_product(row):
+                qr = str(row["currQr"])
+                if qr in qr_data:
+                    tape = qr_data[qr].get("tapeColor", "").lower()
+                    if tape == "white":
+                        return "White tape"
+                    elif tape == "lime":
+                        return "Lima"
+                # Fallback predeterminado si no hay QR o no tiene color
+                return "Lima"
+
+            df.loc[lw_mask, "producto"] = df.loc[lw_mask].apply(_assign_lw_product, axis=1)
 
     # Paso 3 y 4: resolver SPSF vs Blade
     shared_mask = df["stationid"].isin(SPSF_BLADE_STATIONS)

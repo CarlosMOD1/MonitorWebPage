@@ -341,13 +341,13 @@ def api_fpy_range():
         if use_hourly:
             df_range["bucket"] = df_range["endtime"].dt.floor("h")
             all_buckets = pd.date_range(
-                start=dt_from.floor("h"), end=dt_to.floor("h"), freq="h"
+                start=pd.to_datetime(dt_from).floor("h"), end=pd.to_datetime(dt_to).floor("h"), freq="h"
             )
             lbl_fmt = "%m/%d %H:%M"
         else:
             df_range["bucket"] = df_range["endtime"].dt.floor("D")
             all_buckets = pd.date_range(
-                start=dt_from.floor("D"), end=dt_to.floor("D"), freq="D"
+                start=pd.to_datetime(dt_from).floor("D"), end=pd.to_datetime(dt_to).floor("D"), freq="D"
             )
             lbl_fmt = "%b %d"
 

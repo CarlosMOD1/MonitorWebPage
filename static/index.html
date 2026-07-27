@@ -33,6 +33,10 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#0F1923;color:#F4F6F8;he
 .date-range{display:flex;gap:6px;align-items:center}
 .date-range label{font-size:10px;color:#8B9BAA}
 .date-range input{background:#1A2B3C;border:1px solid #2C3E50;color:#F4F6F8;padding:3px 7px;border-radius:6px;font-size:10px;cursor:pointer}
+.date-range select{background:#1A2B3C;border:1px solid #2C3E50;color:#F4F6F8;padding:3px 7px;border-radius:6px;font-size:10px;cursor:pointer;max-width:170px}
+#hwIdWrap{display:none;gap:6px;align-items:center}
+#hwIdWrap label{font-size:10px;color:#8B9BAA}
+#hwIdWrap select{background:#1A2B3C;border:1px solid #2C3E50;color:#F4F6F8;padding:3px 7px;border-radius:6px;font-size:10px;cursor:pointer;max-width:170px}
 .btn-refresh{background:#1E6FBA;color:#fff;border:none;padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;font-weight:700}
 .btn-refresh:hover{background:#2E9CDB}
 .btn-refresh:disabled{background:#2C3E50;cursor:not-allowed}
@@ -249,8 +253,12 @@ tbody tr:hover td{background:#1E3A5F}
         </div>
       </div>
       <div class="right">
-        <div style="display:flex;justify-content:flex-end;flex-shrink:0;padding-bottom:4px">
-          <button class="btn-fpy-toggle" id="btnMonitorFPY" onclick="toggleMonitorFPY()">⏱️ Monitor FPY</button>
+        <div style="display:flex;align-items:center;flex-shrink:0;padding-bottom:4px">
+          <div id="hwIdWrap">
+            <label>Hardware ID</label>
+            <select id="hardwareIdSelect" onchange="onHardwareIdChange()"></select>
+          </div>
+          <button class="btn-fpy-toggle" id="btnMonitorFPY" style="margin-left:auto" onclick="toggleMonitorFPY()">Monitor Yield</button>
         </div>
         <div id="pieChartsRow" style="display:flex;gap:8px;flex:1;overflow:hidden">
           <div class="pie-wrap" style="flex:1">
@@ -296,6 +304,8 @@ let GROUP_NAMES   = [];
 let activeProduct = 'all';
 let activeStation = 'all';
 let realFailuresMode = false;
+let activeHardwareId = 'all'; // sub-filtro opcional (ej. MPS-Jasper / stationid=238)
+let loadedHardwareId = 'all'; // hardware_id que corresponde a los datos actualmente en DATA
 
 // ── Default dates ───────────────────────────────────
 function defaultDates() {
@@ -313,16 +323,23 @@ function initDates() {
 }
 
 // ── Fetch data from API ─────────────────────────────
-async function loadData(dateFrom, dateTo) {
+// opts.hardwareId — filtra por hardware_id (default 'all')
+// opts.resetSelection — si es false, conserva activeStation/activeHardwareId
+//                       tras la carga (usado al cambiar solo el hardware_id)
+async function loadData(dateFrom, dateTo, opts = {}) {
+  const hardwareId     = opts.hardwareId ?? 'all';
+  const resetSelection = opts.resetSelection !== false;
+
   showLoading(true, 'Querying in-memory data...');
   setFilterEnabled(false);
   try {
-    const res = await fetch(`/api/data?from=${dateFrom}&to=${dateTo}&real_failures=${realFailuresMode}`);
+    const hwParam = hardwareId !== 'all' ? `&hardware_id=${encodeURIComponent(hardwareId)}` : '';
+    const res = await fetch(`/api/data?from=${dateFrom}&to=${dateTo}&real_failures=${realFailuresMode}${hwParam}`);
     const json = await res.json();
     if (res.status === 503) {
       setStatus(`Server is booting: ${json.error}`, true);
       showLoading(true, 'The server is doing its initial 1-year database load, please wait...');
-      setTimeout(() => loadData(dateFrom, dateTo), 10000); // Reintenta en 10 seg
+      setTimeout(() => loadData(dateFrom, dateTo, opts), 10000); // Reintenta en 10 seg
       return;
     }
     if (!res.ok || json.error) {
@@ -333,8 +350,13 @@ async function loadData(dateFrom, dateTo) {
     }
     DATA        = json;
     GROUP_NAMES = json.groups || [];
-    activeStation = 'all';
+    loadedHardwareId = hardwareId;
+    if (resetSelection) {
+      activeStation    = 'all';
+      activeHardwareId = 'all';
+    }
     render();
+    updateHardwareIdControl();
     setStatus(`Updated: ${json.lastUpdated} | Records: ${json.overall.total.toLocaleString('en-US')}`, false);
   } catch(e) {
     setStatus(`Connection error: ${e.message}`, true);
@@ -634,8 +656,12 @@ function renderTable() {
   } else {
     rows.slice(0, 60).forEach(r => {
       const pct = Math.round(r.qty / maxQ * 100);
-      const safeFalla = r.falla.replace(/'/g, "\\'");
-      const safeStation = r.sname.replace(/'/g, "\\'");
+      // Escapar backslash y comilla simple (string JS) y luego comilla doble
+      // (atributo HTML) para que nombres de falla con caracteres especiales
+      // (ej. notas JSON mal formadas) no rompan el onclick.
+      const escForOnclick = s => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      const safeFalla   = escForOnclick(r.falla);
+      const safeStation = escForOnclick(r.sname);
       html += `<tr style="cursor:pointer" onclick="showDetails('${safeFalla}', ${r.sid}, '${safeStation}')">
         <td style="color:#8B9BAA">${r.falla}</td>
         <td style="color:#8B9BAA;font-size:10px">${r.sname}</td>
@@ -792,12 +818,61 @@ function renderPeriod() {
 function selectProduct(prod) {
   activeProduct = prod;
   activeStation = 'all';
+  activeHardwareId = 'all';
   render();
+  updateHardwareIdControl();
+  if (loadedHardwareId !== 'all') {
+    const from = document.getElementById('dateFrom').value;
+    const to   = document.getElementById('dateTo').value;
+    loadData(from, to, { hardwareId: 'all', resetSelection: false });
+  }
 }
 
 function selectStation(sid) {
   activeStation = sid;
+  activeHardwareId = 'all';
   render();
+  updateHardwareIdControl();
+  if (loadedHardwareId !== 'all') {
+    // Los datos cargados estaban filtrados por un hardware_id de otra estacion.
+    // Volver a cargar sin ese filtro para la nueva seleccion.
+    const from = document.getElementById('dateFrom').value;
+    const to   = document.getElementById('dateTo').value;
+    loadData(from, to, { hardwareId: 'all', resetSelection: false });
+  }
+}
+
+// ── Hardware ID sub-filter (ej. MPS-Jasper / stationid=238) ─────────
+// Consulta los hardware_id disponibles para la estacion activa y muestra
+// el selector solo si la estacion reporta ese dato en sus notas.
+async function updateHardwareIdControl() {
+  const wrap = document.getElementById('hwIdWrap');
+  if (activeStation === 'all') {
+    wrap.style.display = 'none';
+    return;
+  }
+  try {
+    const resp = await fetch(`/api/hardware_ids?stationid=${encodeURIComponent(activeStation)}`);
+    const data = await resp.json();
+    const ids  = data.hardwareIds || [];
+    if (!ids.length) {
+      wrap.style.display = 'none';
+      return;
+    }
+    const sel = document.getElementById('hardwareIdSelect');
+    sel.innerHTML = '<option value="all">All Hardware IDs</option>' +
+      ids.map(id => `<option value="${id}"${id === activeHardwareId ? ' selected' : ''}>${id}</option>`).join('');
+    wrap.style.display = 'flex';
+  } catch (e) {
+    wrap.style.display = 'none';
+  }
+}
+
+async function onHardwareIdChange() {
+  activeHardwareId = document.getElementById('hardwareIdSelect').value;
+  const from = document.getElementById('dateFrom').value;
+  const to   = document.getElementById('dateTo').value;
+  await loadData(from, to, { hardwareId: activeHardwareId, resetSelection: false });
 }
 
 function _updateModeBadge() {
@@ -846,7 +921,7 @@ function _doExcelDownload() {
   const prod = activeProduct;
   const stat = activeStation !== 'all' ? activeStation : '';
   const stationFilter = stat ? `&stationid=${encodeURIComponent(stat)}` : '';
-  window.open(`/api/excel_report?from=${from}&to=${to}&product=${prod}${stationFilter}`, '_blank');
+  window.open(`/api/excel_report?from=${from}&to=${to}&product=${prod}${stationFilter}${_hwParam()}`, '_blank');
 }
 
 async function _fetchReportData() {
@@ -860,7 +935,7 @@ async function _fetchReportData() {
     '<div style="text-align:center;padding:40px;color:#8B9BAA">Loading report data…</div>';
 
   try {
-    const resp = await fetch(`/api/report_data?from=${from}&to=${to}&product=${prod}${sf}`);
+    const resp = await fetch(`/api/report_data?from=${from}&to=${to}&product=${prod}${sf}${_hwParam()}`);
     const data = await resp.json();
     if (!resp.ok || data.error) {
       document.getElementById('reportBody').innerHTML =
@@ -1073,6 +1148,10 @@ function _backFromRTY() {
 }
 
 // ── Download General CSV ────────────────────────────
+function _hwParam() {
+  return activeHardwareId !== 'all' ? `&hardware_id=${encodeURIComponent(activeHardwareId)}` : '';
+}
+
 function downloadAllCsv() {
   const from = document.getElementById('dateFrom').value;
   const to   = document.getElementById('dateTo').value;
@@ -1081,7 +1160,7 @@ function downloadAllCsv() {
   const stationFilter = stat ? `&stationid=${encodeURIComponent(stat)}` : '';
   const rf = realFailuresMode;
   
-  const url = `/api/export_all_csv?from=${from}&to=${to}&product=${prod}${stationFilter}&real_failures=${rf}`;
+  const url = `/api/export_all_csv?from=${from}&to=${to}&product=${prod}${stationFilter}&real_failures=${rf}${_hwParam()}`;
   window.open(url, '_blank');
 }
 
@@ -1247,7 +1326,7 @@ async function showPassFailDetails(resultado, failBin = null) {
   const label = failBin ? `${labelBase} (${failBin})` : labelBase;
   document.getElementById('modalTitle').innerText = (prod !== 'all' ? prod + ' — ' : '') + stationLabel + ' ' + label;
 
-  let urlBase = `/api/passfail_details?from=${from}&to=${to}&product=${prod}${stationFilter}&resultado=${resultado}&real_failures=${realFailuresMode}`;
+  let urlBase = `/api/passfail_details?from=${from}&to=${to}&product=${prod}${stationFilter}&resultado=${resultado}&real_failures=${realFailuresMode}${_hwParam()}`;
   if (failBin) urlBase += `&fail_bin=${encodeURIComponent(failBin)}`;
   const btnCsv = document.getElementById('btnDownloadCsv');
   btnCsv.onclick = () => window.open(urlBase + '&csv=true', '_blank');
@@ -1306,7 +1385,7 @@ async function showDetails(falla, stationId = null, stationName = '') {
 
   document.getElementById('modalTitle').innerText = titlePrefix + falla;
   
-  const urlBase = `/api/failure_details?from=${from}&to=${to}&product=${prod}${stationFilter}&falla=${encodeURIComponent(falla)}&real_failures=${realFailuresMode}`;
+  const urlBase = `/api/failure_details?from=${from}&to=${to}&product=${prod}${stationFilter}&falla=${encodeURIComponent(falla)}&real_failures=${realFailuresMode}${_hwParam()}`;
   const btnCsv = document.getElementById('btnDownloadCsv');
   btnCsv.onclick = () => window.open(urlBase + '&csv=true', '_blank');
 

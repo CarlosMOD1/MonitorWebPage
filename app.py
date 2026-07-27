@@ -81,6 +81,13 @@ def _filter_by_station(df, station_id_str):
     return df
 
 
+def _filter_by_hardware_id(df, hardware_id):
+    """Filtra por hardwareId (ej. MPS-Jasper / stationid=238 con varios hardware_id)."""
+    if hardware_id and hardware_id not in ("all", "") and "hardwareId" in df.columns:
+        return df[df["hardwareId"] == hardware_id]
+    return df
+
+
 def _apply_real_failures_filter(df):
     """Retorna solo ultimo intento por QR (PASSED o FAILED > REAL_FAILURE_HOURS)."""
     cutoff = datetime.now() - timedelta(hours=REAL_FAILURE_HOURS)
@@ -116,6 +123,7 @@ def api_data():
     date_from_str = request.args.get("from", dates["from"])
     date_to_str   = request.args.get("to",   dates["to"])
     real_failures = request.args.get("real_failures", "false").lower() == "true"
+    hardware_id   = request.args.get("hardware_id", "all")
 
     try:
         df = _get_cached_df()
@@ -126,6 +134,7 @@ def api_data():
             }), 503
 
         df_filtered = _filter_by_dates(df, date_from_str, date_to_str)
+        df_filtered = _filter_by_hardware_id(df_filtered, hardware_id)
 
         # Calculo QR-level para el pie de pass/fail en modo real_failures
         pass_fail_pie = None
@@ -191,6 +200,7 @@ def api_data():
 
         stats = compute_stats(df_filtered, date_from_str, date_to_str, real_failures=real_failures)
         stats["realFailures"] = real_failures
+        stats["hardwareId"]   = hardware_id
         if pass_fail_pie:
             stats["passFailPie"] = pass_fail_pie
         if GLOBAL_CACHE["last_updated"]:
@@ -383,6 +393,38 @@ def api_fpy_range():
 
 
 # ─────────────────────────────────────────────────────────────
+# RUTA: HARDWARE IDs POR ESTACION (ej. MPS-Jasper / stationid=238)
+# ─────────────────────────────────────────────────────────────
+
+@app.route("/api/hardware_ids")
+def api_hardware_ids():
+    """
+    Devuelve la lista de hardware_id distintos reportados por una estacion
+    (extraidos del JSON en 'notes'). Se usa para poblar el filtro opcional
+    de hardware en el frontend cuando una estacion reporta varios equipos
+    (ej. MPS-Jasper). Retorna lista vacia si la estacion no usa este campo.
+    """
+    station_id = request.args.get("stationid", "all")
+
+    try:
+        df = _get_cached_df()
+        if df is None:
+            return jsonify({"hardwareIds": []})
+
+        sub = _filter_by_station(df, station_id)
+        if sub.empty or "hardwareId" not in sub.columns:
+            return jsonify({"hardwareIds": []})
+
+        ids = sorted(v for v in sub["hardwareId"].dropna().unique().tolist() if v)
+        return jsonify({"hardwareIds": ids})
+
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ─────────────────────────────────────────────────────────────
 # RUTA: DETALLES DE FALLAS
 # ─────────────────────────────────────────────────────────────
 
@@ -396,6 +438,7 @@ def api_failure_details():
     falla         = request.args.get("falla", "")
     real_failures = request.args.get("real_failures", "false").lower() == "true"
     export_csv    = request.args.get("csv", "false").lower() == "true"
+    hardware_id   = request.args.get("hardware_id", "all")
 
     try:
         df = _get_cached_df()
@@ -405,6 +448,7 @@ def api_failure_details():
         sub = _filter_by_dates(df, date_from_str, date_to_str)
         sub = _filter_by_product(sub, product)
         sub = _filter_by_station(sub, station_id)
+        sub = _filter_by_hardware_id(sub, hardware_id)
 
         if real_failures:
             cutoff = datetime.now() - timedelta(hours=REAL_FAILURE_HOURS)
@@ -416,6 +460,9 @@ def api_failure_details():
 
         if falla:
             sub = sub[sub["tipoFalla"] == falla]
+
+        # Ordenar del mas nuevo al mas viejo
+        sub = sub.sort_values("endtime", ascending=False)
 
         if export_csv:
             cols     = ["endtime", "currQr", "prevQr", "stationName",
@@ -460,6 +507,7 @@ def api_passfail_details():
     resultado     = request.args.get("resultado", "")
     real_failures = request.args.get("real_failures", "false").lower() == "true"
     export_csv    = request.args.get("csv", "false").lower() == "true"
+    hardware_id   = request.args.get("hardware_id", "all")
 
     try:
         df = _get_cached_df()
@@ -469,6 +517,7 @@ def api_passfail_details():
         sub = _filter_by_dates(df, date_from_str, date_to_str)
         sub = _filter_by_product(sub, product)
         sub = _filter_by_station(sub, station_id)
+        sub = _filter_by_hardware_id(sub, hardware_id)
 
         # Keep a copy prior to applying the real_failures/result filters
         original_sub = sub.copy()
@@ -551,6 +600,7 @@ def api_export_all_csv():
     product       = request.args.get("product", "all")
     station_id    = request.args.get("stationid", "all")
     real_failures = request.args.get("real_failures", "false").lower() == "true"
+    hardware_id   = request.args.get("hardware_id", "all")
 
     try:
         df = _get_cached_df()
@@ -560,6 +610,7 @@ def api_export_all_csv():
         sub = _filter_by_dates(df, date_from_str, date_to_str)
         sub = _filter_by_product(sub, product)
         sub = _filter_by_station(sub, station_id)
+        sub = _filter_by_hardware_id(sub, hardware_id)
 
         if sub.empty:
             return "No data found", 404
@@ -596,6 +647,7 @@ def api_report_data():
     date_to_str   = request.args.get("to",   dates["to"])
     product       = request.args.get("product", "all")
     station_id    = request.args.get("stationid", "all")
+    hardware_id   = request.args.get("hardware_id", "all")
 
     try:
         df = _get_cached_df()
@@ -605,6 +657,7 @@ def api_report_data():
         sub = _filter_by_dates(df, date_from_str, date_to_str)
         sub = _filter_by_product(sub, product)
         sub = _filter_by_station(sub, station_id)
+        sub = _filter_by_hardware_id(sub, hardware_id)
 
         if sub.empty:
             return jsonify({"empty": True, "label": "No data"})
@@ -647,6 +700,7 @@ def api_excel_report():
     date_to_str   = request.args.get("to",   dates["to"])
     product       = request.args.get("product", "all")
     station_id    = request.args.get("stationid", "all")
+    hardware_id   = request.args.get("hardware_id", "all")
 
     try:
         df = _get_cached_df()
@@ -656,6 +710,7 @@ def api_excel_report():
         sub = _filter_by_dates(df, date_from_str, date_to_str)
         sub = _filter_by_product(sub, product)
         sub = _filter_by_station(sub, station_id)
+        sub = _filter_by_hardware_id(sub, hardware_id)
 
         if sub.empty:
             return "No data for the selected filters", 404

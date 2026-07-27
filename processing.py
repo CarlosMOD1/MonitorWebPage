@@ -271,10 +271,14 @@ def _extract_tipo_falla_impl(failure_code, notes_raw, station_name="", producto=
         if result:
             return result
 
-        # 7. Texto plano
-        result = _extract_from_plain_text(ns, station, producto, fc)
-        if result:
-            return result
+        # 7. Texto plano (omitir si 'ns' es JSON: ya se intento extraer en el
+        # paso 6; parsearlo como texto plano produce basura como '{"failure_codes').
+        # Si el JSON no tuvo nada util (ej. failure_codes vacio), cae al paso 8
+        # y se usa el failureCode (ej. ALL-FAIL-000) como tipo de falla.
+        if not ns.startswith("{"):
+            result = _extract_from_plain_text(ns, station, producto, fc)
+            if result:
+                return result
 
     # 8. Ultimo recurso
     return fc
@@ -288,6 +292,23 @@ def _extract_tipo_falla_impl(failure_code, notes_raw, station_name="", producto=
 # Carga inicial: se rellena progresivamente (~261k filas la primera vez).
 # Refresco de fondo: la mayoria ya existe → lookup O(1) por fila → segundos.
 _TIPO_FALLA_CACHE: dict = {}
+
+
+def extract_hardware_id(notes_raw):
+    """
+    Extrae el campo 'hardware_id' de notas en formato JSON.
+    Usado para diferenciar equipos dentro de una misma estacion
+    (ej. MPS-Jasper / stationid=238, que reporta varios hardware_id distintos).
+    Retorna '' si las notas no son JSON o no contienen 'hardware_id'.
+    """
+    try:
+        if notes_raw and isinstance(notes_raw, str) and notes_raw.strip().startswith("{"):
+            hw_id = json.loads(notes_raw).get("hardware_id")
+            if hw_id:
+                return str(hw_id)
+    except Exception:
+        pass
+    return ""
 
 
 def extract_tipo_falla(failure_code, notes_raw, station_name="", producto=""):
@@ -406,6 +427,11 @@ def prepare_dataframe(df):
         ),
         axis=1,
     )
+
+    # Paso 6: pre-calcular hardwareId (ej. MPS-Jasper reporta varios hardware_id
+    # distintos bajo la misma estacion). Vacio ('') si no aplica.
+    df["hardwareId"] = df["notes"].apply(extract_hardware_id)
+
     return df
 
 

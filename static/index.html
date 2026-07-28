@@ -405,6 +405,7 @@ async function loadInlineFPY() {
   if (!from || !to) return;
   let url = `/api/fpy_range?from_dt=${from}&to_dt=${to}&product=${activeProduct}`;
   if (activeStation !== 'all') url += `&stationid=${activeStation}`;
+  url += _hwParam();
   try {
     const resp = await fetch(url);
     const data = await resp.json();
@@ -873,6 +874,7 @@ async function onHardwareIdChange() {
   const from = document.getElementById('dateFrom').value;
   const to   = document.getElementById('dateTo').value;
   await loadData(from, to, { hardwareId: activeHardwareId, resetSelection: false });
+  if (fpyInlineActive) loadInlineFPY();
 }
 
 function _updateModeBadge() {

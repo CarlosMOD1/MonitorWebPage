@@ -307,11 +307,13 @@ def api_fpy_range():
       to_dt     — fecha fin    (YYYY-MM-DD)
       product   — filtro de producto ('all' o nombre)
       stationid — filtro de estacion (int o 'all')
+      hardware_id — filtro opcional de hardware (ej. MPS-Jasper / stationid=238)
     """
     from_dt_str = request.args.get("from_dt", None)
     to_dt_str   = request.args.get("to_dt",   None)
     product     = request.args.get("product",  "all")
     station_id  = request.args.get("stationid","all")
+    hardware_id = request.args.get("hardware_id", "all")
 
     try:
         df = _get_cached_df()
@@ -329,6 +331,7 @@ def api_fpy_range():
 
         df_range = df[(df["endtime"] >= dt_from) & (df["endtime"] <= dt_to)].copy()
         df_range = _filter_by_product(df_range, product)
+        df_range = _filter_by_hardware_id(df_range, hardware_id)
         df_range = df_range.dropna(subset=["endtime"])
 
         station_name = product if product != "all" else "All Stations"

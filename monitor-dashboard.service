@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/Desktop/MonitorWebPage
-ExecStart=/usr/bin/python3 /home/pi/Desktop/MonitorWebPage/app.py
+User=teuser
+WorkingDirectory=/home/teuser/MonitorWebPage
+ExecStart=/home/teuser/MonitorWebPage/venv/bin/python /home/teuser/MonitorWebPage/app.py
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

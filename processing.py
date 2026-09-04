@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from config import (
     SQL,
     HISTORICAL_LOAD_DAYS, RECENT_REFRESH_DAYS, REFRESH_INTERVAL_MINUTES,
+    INCREMENTAL_REFRESH_MINUTES, FULL_RESYNC_INTERVAL_MINUTES,
     REAL_FAILURE_HOURS,
     SPSF_BLADE_STATIONS, SPSF_BLADE_DIFF_STATIONS, UNDIFF_STATIONS,
     MODEL_NUMBER_TO_PRODUCT, STATION_TO_GROUP, STATION_ORDER,
@@ -461,17 +462,31 @@ def load_historical_data():
 
 def background_update_worker():
     """
-    Hilo en segundo plano: cada REFRESH_INTERVAL_MINUTES minutos re-consulta
-    los ultimos RECENT_REFRESH_DAYS dias e inyecta los datos frescos al cache.
-    Esto evita recargar toda la historia en cada ciclo.
+    Hilo en segundo plano con refresco en dos niveles:
+      - Cada REFRESH_INTERVAL_MINUTES: refresco incremental, solo consulta los
+        ultimos INCREMENTAL_REFRESH_MINUTES (ventana chica -> query rapida y liviana).
+      - Cada FULL_RESYNC_INTERVAL_MINUTES: resync completo de RECENT_REFRESH_DAYS,
+        para capturar ediciones/correcciones tardias en registros ya cacheados.
     """
+    ticks_since_full_resync = 0
+    ticks_for_full_resync   = max(1, FULL_RESYNC_INTERVAL_MINUTES // REFRESH_INTERVAL_MINUTES)
+
     while True:
         time.sleep(REFRESH_INTERVAL_MINUTES * 60)
         try:
             t0 = time.time()
-            print("[BACKGROUND] Refrescando registros recientes de DB...")
-            cutoff_str = (datetime.now() - timedelta(days=RECENT_REFRESH_DAYS)).strftime("%Y-%m-%d")
-            cutoff_ts  = pd.to_datetime(cutoff_str)
+            ticks_since_full_resync += 1
+            do_full_resync = ticks_since_full_resync >= ticks_for_full_resync
+
+            if do_full_resync:
+                window_days_or_minutes = f"{RECENT_REFRESH_DAYS} dias (resync completo)"
+                cutoff_str = (datetime.now() - timedelta(days=RECENT_REFRESH_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                window_days_or_minutes = f"{INCREMENTAL_REFRESH_MINUTES} minutos (incremental)"
+                cutoff_str = (datetime.now() - timedelta(minutes=INCREMENTAL_REFRESH_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+
+            print(f"[BACKGROUND] Refrescando registros recientes de DB ({window_days_or_minutes})...")
+            cutoff_ts = pd.to_datetime(cutoff_str)
 
             conn      = connect()
             df_recent = pd.read_sql(SQL + f" AND e.endtime >= '{cutoff_str}'", conn)
@@ -486,6 +501,10 @@ def background_update_worker():
 
             GLOBAL_CACHE["df"]           = new_df
             GLOBAL_CACHE["last_updated"] = datetime.now()
+
+            if do_full_resync:
+                ticks_since_full_resync = 0
+
             print(f"[BACKGROUND] Actualizacion completa. {len(df_recent)} filas en "
                   f"{time.time()-t0:.1f}s | Total RAM: {len(new_df)} | Cache tipoFalla: {len(_TIPO_FALLA_CACHE)}")
 

@@ -34,9 +34,11 @@ UNDIFF_STATIONS = {406, 393}
 # ─────────────────────────────────────────────────────────────
 # CONSTANTES DE COMPORTAMIENTO DEL DASHBOARD
 # ─────────────────────────────────────────────────────────────
-HISTORICAL_LOAD_DAYS       = 30    # Dias de historia a cargar al iniciar
-RECENT_REFRESH_DAYS        = 2     # Ventana de refresco en segundo plano
-REFRESH_INTERVAL_MINUTES   = 15    # Frecuencia del hilo de refresco
+HISTORICAL_LOAD_DAYS       = 90    # Dias de historia a cargar al iniciar
+RECENT_REFRESH_DAYS        = 2     # Ventana de refresco completo (resync periodico)
+REFRESH_INTERVAL_MINUTES   = 15    # Frecuencia del hilo de refresco incremental
+INCREMENTAL_REFRESH_MINUTES = 20   # Ventana del refresco incremental (con margen de seguridad)
+FULL_RESYNC_INTERVAL_MINUTES = 120 # Cada cuanto se hace el resync completo de RECENT_REFRESH_DAYS
 REAL_FAILURE_HOURS         = 1     # Horas minimas para considerar una falla "real"
 DEFAULT_QUERY_RANGE_DAYS   = 30    # Rango de fechas por defecto en las rutas
 DEBUG_ENDPOINT_RANGE_DAYS  = 7     # Rango de fechas para endpoints de debug
@@ -64,6 +66,7 @@ GROUPS = {
     "Opal 4":      [289, 290, 291, 292, 293, 294, 295],
     "Lima":        [254, 90, 247, 251],
     "White tape":  [90],
+    "miniwhite":   [227,243,228]
 }
 
 # Conjunto de todas las estaciones compartidas SPSF/Blade
